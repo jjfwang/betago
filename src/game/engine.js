@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   BLACK,
@@ -10,6 +9,7 @@ import {
   tryPlaceStone,
 } from "./rules.js";
 import { deterministicPolicyMove, selectAIMove } from "../ai/client.js";
+import * as data from "../data.js";
 import { releaseKataGoSession } from "../ai/katago.js";
 
 const MAX_AI_RETRIES = 2;
@@ -21,10 +21,9 @@ const AI_LEVELS = new Set(["entry", "medium", "hard"]);
 const MAX_ACTION_REQUESTS = Number.parseInt(process.env.MAX_ACTION_REQUESTS ?? "300", 10);
 const MAX_AI_TURN_LOGS = Number.parseInt(process.env.MAX_AI_TURN_LOGS ?? "500", 10);
 const MAX_GAMES = Number.parseInt(process.env.MAX_GAMES ?? "500", 10);
-const MAX_SESSIONS = Number.parseInt(process.env.MAX_SESSIONS ?? "1000", 10);
 const MAX_MOVES_IN_PAYLOAD = Number.parseInt(process.env.MAX_MOVES_IN_PAYLOAD ?? "160", 10);
 
-const sessions = new Map();
+
 const games = new Map();
 const sessionActiveGame = new Map();
 const aiInFlight = new Set();
@@ -63,13 +62,13 @@ function gameSummary(game) {
 
   return {
     id: game.id,
-    board_size: game.boardSize,
+    board_size: game.boardSize ?? game.board_size,
     komi: game.komi,
     ai_level: game.aiLevel,
     status: game.status,
     winner: game.winner,
     turn: game.turn,
-    turn_version: game.turnVersion,
+    turn_version: game.turnVersion ?? game.turn_version,
     pending_action: game.pendingAction,
     ai_status: game.aiStatus,
     captures: game.captures,
@@ -80,8 +79,8 @@ function gameSummary(game) {
     moves_truncated: moveSliceStart > 0,
     score: game.score,
     last_ai_rationale: lastAIMove?.rationale ?? null,
-    created_at: game.createdAt,
-    updated_at: game.updatedAt,
+    created_at: game.createdAt ?? game.created_at,
+    updated_at: game.updatedAt ?? game.updated_at,
   };
 }
 
@@ -91,30 +90,10 @@ function publishGame(game) {
   gameEvents.emit(`game:${game.id}`, gameSummary(game));
 }
 
-function createSession() {
-  const id = randomUUID();
-  const nowMs = Date.now();
-  const session = {
-    id,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-    createdAtMs: nowMs,
-    updatedAtMs: nowMs,
-  };
-  sessions.set(id, session);
-  pruneStores();
-  return session;
-}
 
-export function ensureSession(sessionId) {
-  if (sessionId && sessions.has(sessionId)) {
-    const session = sessions.get(sessionId);
-    const nowMs = Date.now();
-    session.updatedAt = nowIso();
-    session.updatedAtMs = nowMs;
-    return session;
-  }
-  return createSession();
+
+export async function ensureSession(sessionId) {
+  return await data.ensureSession(sessionId);
 }
 
 function trimMapOldest(map, maxSize) {
@@ -138,16 +117,6 @@ function pruneStores() {
     }
   }
 
-  if (sessions.size > MAX_SESSIONS) {
-    const removable = [...sessions.values()]
-      .filter((session) => !sessionActiveGame.has(session.id))
-      .sort((a, b) => a.updatedAtMs - b.updatedAtMs);
-    while (sessions.size > MAX_SESSIONS && removable.length > 0) {
-      const candidate = removable.shift();
-      sessions.delete(candidate.id);
-    }
-  }
-
   if (games.size > MAX_GAMES) {
     const finished = [...games.values()]
       .filter((game) => game.status === "finished")
@@ -161,25 +130,29 @@ function pruneStores() {
   }
 }
 
-function createMove({ game, player, action, x = null, y = null, captures = 0, rationale = "", model = null, responseId = null }) {
-  const id = randomUUID();
+async function createMove({ game, player, action, x = null, y = null, captures = 0, rationale = "", model = null, responseId = null }) {
   const hash = boardHash(game.board);
-  return {
-    id,
+  const moveData = {
     game_id: game.id,
     move_index: game.moves.length,
     player,
     action,
     coordinate: action === "place" ? coordinateLabel(x, y, game.boardSize) : null,
-    x,
-    y,
     captures,
     board_hash: hash,
+  };
+  const move = await data.createMove(moveData);
+
+  // In-memory representation
+  return {
+    ...move,
+    x,
+    y,
     turn_version: game.turnVersion,
     rationale: rationale || null,
     model,
     response_id: responseId,
-    created_at: nowIso(),
+    created_at: move.created_at.toISOString(),
   };
 }
 
@@ -199,11 +172,11 @@ function finalizeByScore(game) {
   releaseKataGoSession(game.id);
 }
 
-function applyPass(game, player, { rationale = "", model = null, responseId = null } = {}) {
+async function applyPass(game, player, { rationale = "", model = null, responseId = null } = {}) {
   game.consecutivePasses += 1;
   game.positionHistory.add(boardHash(game.board));
   game.moves.push(
-    createMove({
+    await createMove({
       game,
       player,
       action: "pass",
@@ -223,9 +196,9 @@ function applyPass(game, player, { rationale = "", model = null, responseId = nu
   game.status = game.turn === "ai" ? "ai_thinking" : "human_turn";
 }
 
-function applyResign(game, player, { rationale = "", model = null, responseId = null } = {}) {
+async function applyResign(game, player, { rationale = "", model = null, responseId = null } = {}) {
   game.moves.push(
-    createMove({
+    await createMove({
       game,
       player,
       action: "resign",
@@ -244,7 +217,7 @@ function applyResign(game, player, { rationale = "", model = null, responseId = 
   releaseKataGoSession(game.id);
 }
 
-function applyPlace(game, player, x, y, { rationale = "", model = null, responseId = null } = {}) {
+async function applyPlace(game, player, x, y, { rationale = "", model = null, responseId = null } = {}) {
   const color = player === "human" ? BLACK : WHITE;
   const result = tryPlaceStone({
     board: game.board,
@@ -268,7 +241,7 @@ function applyPlace(game, player, x, y, { rationale = "", model = null, response
   }
 
   game.moves.push(
-    createMove({
+    await createMove({
       game,
       player,
       action: "place",
@@ -287,33 +260,40 @@ function applyPlace(game, player, x, y, { rationale = "", model = null, response
   return { ok: true };
 }
 
-function applyPlayerAction(game, player, payload, meta = {}) {
+async function applyPlayerAction(game, player, payload, meta = {}) {
   const action = payload.action;
   if (action === "place") {
-    return applyPlace(game, player, payload.x, payload.y, meta);
+    return await applyPlace(game, player, payload.x, payload.y, meta);
   }
   if (action === "pass") {
-    applyPass(game, player, meta);
+    await applyPass(game, player, meta);
     return { ok: true };
   }
   if (action === "resign") {
-    applyResign(game, player, meta);
+    await applyResign(game, player, meta);
     return { ok: true };
   }
   return { ok: false, reason: "invalid_action" };
 }
 
-function createGame({ sessionId, boardSize = DEFAULT_BOARD_SIZE, komi = DEFAULT_KOMI, aiLevel = DEFAULT_AI_LEVEL }) {
-  const id = randomUUID();
+async function createGame({ sessionId, boardSize = DEFAULT_BOARD_SIZE, komi = DEFAULT_KOMI, aiLevel = DEFAULT_AI_LEVEL }) {
   const board = createEmptyBoard(boardSize);
   const startHash = boardHash(board);
-  const game = {
-    id,
+  const gameData = {
+    session_id: sessionId,
+    board_size: boardSize,
+    komi,
+    status: "human_turn",
+    turn_version: 0,
+  };
+  const game = await data.createGame(gameData);
+
+  // In-memory representation
+  const gameRuntime = {
+    ...game,
     sessionId,
     boardSize,
-    komi,
     aiLevel: normalizeAiLevel(aiLevel),
-    status: "human_turn",
     winner: null,
     turn: "human",
     turnVersion: 0,
@@ -327,20 +307,20 @@ function createGame({ sessionId, boardSize = DEFAULT_BOARD_SIZE, komi = DEFAULT_
     moves: [],
     actionRequests: new Map(),
     aiTurnLogs: [],
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-    createdAtMs: Date.now(),
-    updatedAtMs: Date.now(),
+    createdAt: game.created_at.toISOString(),
+    updatedAt: game.updated_at.toISOString(),
+    createdAtMs: game.created_at.getTime(),
+    updatedAtMs: game.updated_at.getTime(),
   };
 
-  games.set(id, game);
-  sessionActiveGame.set(sessionId, id);
+  games.set(game.id, gameRuntime);
+  sessionActiveGame.set(sessionId, game.id);
   pruneStores();
-  publishGame(game);
-  return game;
+  publishGame(gameRuntime);
+  return gameRuntime;
 }
 
-export function createOrGetActiveGame(sessionId, options = {}) {
+export async function createOrGetActiveGame(sessionId, options = {}) {
   const existingId = sessionActiveGame.get(sessionId);
   if (!options.forceNew && existingId) {
     const existing = games.get(existingId);
@@ -349,7 +329,7 @@ export function createOrGetActiveGame(sessionId, options = {}) {
     }
   }
 
-  const game = createGame({
+  const game = await createGame({
     sessionId,
     boardSize: options.boardSize ?? DEFAULT_BOARD_SIZE,
     komi: options.komi ?? DEFAULT_KOMI,
@@ -421,7 +401,7 @@ async function runAITurn(gameId, expectedTurnVersion) {
     }
 
     if (candidate.action === "place") {
-      const attempt = applyPlayerAction(
+      const attempt = await applyPlayerAction(
         game,
         "ai",
         { action: "place", x: candidate.x, y: candidate.y },
@@ -432,8 +412,7 @@ async function runAITurn(gameId, expectedTurnVersion) {
         },
       );
 
-      game.aiTurnLogs.push({
-        id: randomUUID(),
+      const logData = {
         game_id: game.id,
         move_index: game.moves.length,
         model: candidate.model,
@@ -445,8 +424,9 @@ async function runAITurn(gameId, expectedTurnVersion) {
         external_error: candidate.externalError ?? null,
         status: attempt.ok ? "applied" : "illegal",
         error_code: attempt.ok ? null : attempt.reason,
-        created_at: nowIso(),
-      });
+      };
+      const log = await data.logAITurn(logData);
+      game.aiTurnLogs.push({ ...log, created_at: log.created_at.toISOString() });
       trimArrayHead(game.aiTurnLogs, MAX_AI_TURN_LOGS);
 
       if (attempt.ok) {
@@ -463,14 +443,13 @@ async function runAITurn(gameId, expectedTurnVersion) {
     }
 
     if (candidate.action === "pass" || candidate.action === "resign") {
-      applyPlayerAction(game, "ai", { action: candidate.action }, {
+      await applyPlayerAction(game, "ai", { action: candidate.action }, {
         rationale: candidate.rationale,
         model: candidate.model,
         responseId: candidate.responseId,
       });
 
-      game.aiTurnLogs.push({
-        id: randomUUID(),
+      const logData = {
         game_id: game.id,
         move_index: game.moves.length,
         model: candidate.model,
@@ -482,8 +461,9 @@ async function runAITurn(gameId, expectedTurnVersion) {
         external_error: candidate.externalError ?? null,
         status: "applied",
         error_code: null,
-        created_at: nowIso(),
-      });
+      };
+      const log = await data.logAITurn(logData);
+      game.aiTurnLogs.push({ ...log, created_at: log.created_at.toISOString() });
       trimArrayHead(game.aiTurnLogs, MAX_AI_TURN_LOGS);
 
       game.aiStatus = "idle";
@@ -505,21 +485,20 @@ async function runAITurn(gameId, expectedTurnVersion) {
   const fallback = deterministicPolicyMove(game, legalPlacements);
 
   if (fallback.action === "place") {
-    applyPlayerAction(game, "ai", { action: "place", x: fallback.x, y: fallback.y }, {
+    await applyPlayerAction(game, "ai", { action: "place", x: fallback.x, y: fallback.y }, {
       rationale: fallback.rationale,
       model: "deterministic-fallback",
       responseId: null,
     });
   } else {
-    applyPlayerAction(game, "ai", { action: "pass" }, {
+    await applyPlayerAction(game, "ai", { action: "pass" }, {
       rationale: fallback.rationale,
       model: "deterministic-fallback",
       responseId: null,
     });
   }
 
-  game.aiTurnLogs.push({
-    id: randomUUID(),
+  const logData = {
     game_id: game.id,
     move_index: game.moves.length,
     model: "deterministic-fallback",
@@ -531,8 +510,9 @@ async function runAITurn(gameId, expectedTurnVersion) {
     external_error: `retry_exhausted_${externalFailures}`,
     status: "applied",
     error_code: null,
-    created_at: nowIso(),
-  });
+  };
+  const log = await data.logAITurn(logData);
+  game.aiTurnLogs.push({ ...log, created_at: log.created_at.toISOString() });
   trimArrayHead(game.aiTurnLogs, MAX_AI_TURN_LOGS);
 
   game.aiStatus = "idle";
@@ -540,7 +520,7 @@ async function runAITurn(gameId, expectedTurnVersion) {
   publishGame(game);
 }
 
-export function submitHumanAction({ sessionId, gameId, action, x, y, actionId, expectedTurnVersion }) {
+export async function submitHumanAction({ sessionId, gameId, action, x, y, actionId, expectedTurnVersion }) {
   const lookup = getGameForSession(sessionId, gameId);
   if (!lookup.ok) {
     return { ok: false, status: lookup.error === "not_found" ? 404 : 403, error: lookup.error };
@@ -578,7 +558,7 @@ export function submitHumanAction({ sessionId, gameId, action, x, y, actionId, e
     normalized.y = y;
   }
 
-  const result = applyPlayerAction(game, "human", normalized);
+  const result = await applyPlayerAction(game, "human", normalized);
   if (!result.ok) {
     return { ok: false, status: 400, error: result.reason };
   }
@@ -592,16 +572,15 @@ export function submitHumanAction({ sessionId, gameId, action, x, y, actionId, e
   }
 
   const response = gameSummary(game);
-  game.actionRequests.set(actionId, {
-    id: randomUUID(),
+  const requestData = {
     game_id: game.id,
     action_id: actionId,
     expected_turn_version: expectedTurnVersion,
     status: "accepted",
     error_code: null,
-    response,
-    created_at: nowIso(),
-  });
+  };
+  const request = await data.recordActionRequest(requestData);
+  game.actionRequests.set(actionId, { ...request, response, created_at: request.created_at.toISOString() });
   trimMapOldest(game.actionRequests, MAX_ACTION_REQUESTS);
 
   publishGame(game);

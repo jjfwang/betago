@@ -94,9 +94,9 @@ if (ENABLE_CORS) {
   });
 }
 
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
   const existing = req.cookies?.[SESSION_COOKIE];
-  const session = ensureSession(existing);
+  const session = await ensureSession(existing);
 
   if (!existing || existing !== session.id) {
     res.cookie(SESSION_COOKIE, session.id, {
@@ -113,10 +113,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
 
-app.post("/api/games", (req, res) => {
+app.post("/api/games", async (req, res) => {
   const forceNew = Boolean(req.body?.force_new);
   const aiLevel = normalizeAiLevel(req.body?.ai_level);
-  const { game, created } = createOrGetActiveGame(req.session.id, { forceNew, aiLevel });
+  const { game, created } = await createOrGetActiveGame(req.session.id, { forceNew, aiLevel });
   res.status(created ? 201 : 200).json({ session_id: req.session.id, game: gameToResponse(game), created });
 });
 
@@ -128,7 +128,7 @@ app.get("/api/games/:id", (req, res) => {
   return res.json({ game: gameToResponse(lookup.game) });
 });
 
-app.post("/api/games/:id/actions", (req, res) => {
+app.post("/api/games/:id/actions", async (req, res) => {
   const action = typeof req.body?.action === "string" ? req.body.action.toLowerCase() : null;
   const actionId = req.body?.action_id;
   const expectedTurnVersion = req.body?.expected_turn_version;
@@ -143,7 +143,7 @@ app.post("/api/games/:id/actions", (req, res) => {
     return res.status(400).json({ error: "invalid_coordinate" });
   }
 
-  const result = submitHumanAction({
+  const result = await submitHumanAction({
     sessionId: req.session.id,
     gameId: req.params.id,
     action,
