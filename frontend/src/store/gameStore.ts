@@ -24,7 +24,7 @@ import type { Game } from "@/types/game";
 /** Possible loading states for async operations. */
 export type LoadingState = "idle" | "loading" | "submitting" | "error";
 
-interface GameState {
+export interface GameState {
   /** The current game, or null if not yet loaded. */
   game: Game | null;
 

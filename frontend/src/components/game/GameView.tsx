@@ -6,6 +6,10 @@
  *
  * This component is intentionally kept thin: it wires the store to the
  * presentational sub-components and handles the "last move" derivation.
+ *
+ * The `AIStatus` component receives its `status` prop from the `aiStatus`
+ * selector exposed by `useGame`, ensuring it always reflects the latest
+ * backend-reported AI processing state without any additional local state.
  */
 
 "use client";
@@ -25,6 +29,7 @@ export function GameView() {
     loadingState,
     errorMessage,
     humanMoveEnabled,
+    aiStatus,
     startGame,
     placeStone,
     pass,
@@ -80,10 +85,17 @@ export function GameView() {
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">
           {/* Board card */}
           <section className="bg-surface-card border border-ink-faint rounded-card shadow-card p-4 flex flex-col gap-3">
-            {/* Status row */}
-            <div className="flex items-center justify-between gap-2">
+            {/* Status row: turn indicator on the left, AI status on the right */}
+            <div className="flex items-center justify-between gap-2 min-h-[1.5rem]">
               <TurnIndicator game={game} />
-              <AIStatus status={game?.ai_status ?? null} />
+              {/*
+               * AIStatus receives the AI processing status directly from the
+               * store via the `aiStatus` selector in `useGame`.  When the
+               * backend transitions the game to `ai_thinking`, the SSE stream
+               * (or the action response) will push an updated game object into
+               * the store, which in turn updates `aiStatus` here.
+               */}
+              <AIStatus status={aiStatus} />
             </div>
 
             {/* Board */}
@@ -99,7 +111,7 @@ export function GameView() {
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-ink-muted text-sm">
-                  {isLoading ? "Loading board…" : "No active game"}
+                  {isLoading ? "Loading board\u2026" : "No active game"}
                 </div>
               )}
             </div>

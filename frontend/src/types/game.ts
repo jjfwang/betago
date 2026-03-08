@@ -50,7 +50,7 @@ export type GameStatus = "human_turn" | "ai_thinking" | "finished";
 export type Winner = "B" | "W" | "draw" | null;
 
 /** AI processing status. */
-export type AiStatus = "idle" | "thinking" | "done" | "error" | null;
+export type AiStatus = "idle" | "thinking" | "retrying" | "done" | "error" | null;
 
 /** Full game state as returned by the backend. */
 export interface Game {

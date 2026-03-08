@@ -3,12 +3,17 @@
  *
  * These tests verify that the hook correctly surfaces store state and
  * actions.  The underlying store is tested separately in gameStore.test.ts.
+ *
+ * New tests added:
+ *  - `aiStatus` selector returns the correct AI status from the game object.
+ *  - `aiStatus` returns null when no game is loaded.
+ *  - `selectAiStatus` correctly maps all AiStatus values.
  */
 
-import { renderHook } from "@testing-library/react";
-import { useGame } from "@/hooks/useGame";
+import { renderHook, act } from "@testing-library/react";
+import { useGame, selectAiStatus } from "@/hooks/useGame";
 import { useGameStore } from "@/store/gameStore";
-import type { Game } from "@/types/game";
+import type { Game, AiStatus } from "@/types/game";
 
 // Mock the API so the store actions don't make real HTTP calls.
 jest.mock("@/lib/api", () => ({
@@ -103,5 +108,73 @@ describe("useGame", () => {
     useGameStore.setState({ errorMessage: "test error" });
     const { result } = renderHook(() => useGame());
     expect(result.current.errorMessage).toBe("test error");
+  });
+
+  // ── aiStatus tests ──────────────────────────────────────────────────────
+
+  it("returns aiStatus=null when no game is loaded", () => {
+    const { result } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBeNull();
+  });
+
+  it("returns aiStatus=idle when game ai_status is idle", () => {
+    useGameStore.setState({ game: makeGame({ ai_status: "idle" }) });
+    const { result } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBe("idle");
+  });
+
+  it("returns aiStatus=thinking when game ai_status is thinking", () => {
+    useGameStore.setState({ game: makeGame({ ai_status: "thinking" }) });
+    const { result } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBe("thinking");
+  });
+
+  it("returns aiStatus=retrying when game ai_status is retrying", () => {
+    useGameStore.setState({ game: makeGame({ ai_status: "retrying" }) });
+    const { result } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBe("retrying");
+  });
+
+  it("returns aiStatus=done when game ai_status is done", () => {
+    useGameStore.setState({ game: makeGame({ ai_status: "done" }) });
+    const { result } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBe("done");
+  });
+
+  it("returns aiStatus=error when game ai_status is error", () => {
+    useGameStore.setState({ game: makeGame({ ai_status: "error" }) });
+    const { result } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBe("error");
+  });
+
+  it("aiStatus updates reactively when game state changes", () => {
+    useGameStore.setState({ game: makeGame({ ai_status: "thinking" }) });
+    const { result, rerender } = renderHook(() => useGame());
+    expect(result.current.aiStatus).toBe("thinking");
+
+    // Simulate backend pushing a state update (e.g. via SSE).
+    act(() => {
+      useGameStore.setState({ game: makeGame({ ai_status: "done" }) });
+    });
+    expect(result.current.aiStatus).toBe("done");
+  });
+});
+
+// ── selectAiStatus tests ──────────────────────────────────────────────────────
+
+describe("selectAiStatus", () => {
+  const baseState = useGameStore.getState();
+
+  it("returns null when game is null", () => {
+    expect(selectAiStatus({ ...baseState, game: null })).toBeNull();
+  });
+
+  const statuses: AiStatus[] = ["idle", "thinking", "retrying", "done", "error", null];
+
+  statuses.forEach((aiStatus) => {
+    it(`returns "${aiStatus}" when game.ai_status is "${aiStatus}"`, () => {
+      const game = makeGame({ ai_status: aiStatus });
+      expect(selectAiStatus({ ...baseState, game })).toBe(aiStatus);
+    });
   });
 });
