@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { deterministicPolicyMove } from "../src/ai/client.js";
 import { BLACK, WHITE, boardHash, createEmptyBoard, listLegalPlacements } from "../src/game/rules.js";
-import { normalizeAiLevel } from "../src/game/engine.js";
+import { normalizeAiLevel } from "../src/game/service.js";
 
 function buildCaptureScenario() {
   const board = createEmptyBoard(5);

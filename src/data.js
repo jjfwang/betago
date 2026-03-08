@@ -35,6 +35,14 @@ export async function createGame(data) {
   return game;
 }
 
+export async function getGameById(gameId) {
+  return await db("games").where({ id: gameId }).first();
+}
+
+export async function getMovesByGameId(gameId) {
+  return await db("moves").where({ game_id: gameId }).orderBy("move_index");
+}
+
 export async function createMove(data) {
   const id = randomUUID();
   const move = {
