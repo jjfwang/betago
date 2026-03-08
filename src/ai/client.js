@@ -1,6 +1,7 @@
 import { GoEngine, WHITE } from "../game/engine.js";
 import { requestKataGoMove } from "./katago.js";
 import { aiLog, aiLogPrompt } from "./logger.js";
+import { validateAIAction } from "./schema.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
@@ -21,25 +22,22 @@ function normalizeDifficulty(value) {
 }
 
 function parseAIAction(raw) {
-  if (!raw || typeof raw !== "object") {
+  const valid = validateAIAction(raw);
+  if (!valid) {
+    aiLog("ai_action.invalid_schema", {
+      errors: validateAIAction.errors,
+      raw_input: raw,
+    });
     return null;
   }
-  const action = typeof raw.action === "string" ? raw.action.toLowerCase() : null;
-  if (!["place", "pass", "resign"].includes(action)) {
-    return null;
-  }
-  const x = asInt(raw.x);
-  const y = asInt(raw.y);
+
   const rationale = typeof raw.rationale === "string" ? raw.rationale.slice(0, 240) : "";
 
-  if (action === "place") {
-    if (x === null || y === null) {
-      return null;
-    }
-    return { action, x, y, rationale };
+  if (raw.action === "place") {
+    return { action: "place", x: raw.x, y: raw.y, rationale };
   }
 
-  return { action, rationale };
+  return { action: raw.action, rationale };
 }
 
 async function postJson(url, body, headers = {}) {
