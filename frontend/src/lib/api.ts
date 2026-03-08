@@ -4,6 +4,13 @@
  * Thin wrapper around `fetch` that provides typed helpers for every backend
  * endpoint.  All requests go to `/api/*` which is proxied to the backend
  * server via the Next.js `rewrites` configuration in `next.config.ts`.
+ *
+ * Exports:
+ *  - `createOrResumeGame`   – POST /api/games
+ *  - `fetchGame`            – GET  /api/games/:id
+ *  - `submitAction`         – POST /api/games/:id/actions
+ *  - `openGameEventSource`  – GET  /api/games/:id/events (SSE)
+ *  - `ApiClientError`       – Typed error class for non-2xx responses
  */
 
 import type {
@@ -75,6 +82,9 @@ export async function createOrResumeGame(
 
 /**
  * Fetch the current state of a game by id.
+ *
+ * Useful as a polling fallback when the SSE stream is unavailable, and for
+ * recovering from stale-turn-version errors by refreshing the latest state.
  */
 export async function fetchGame(gameId: string): Promise<Game> {
   const data = await apiFetch<GameResponse>(`/api/games/${gameId}`);
@@ -100,9 +110,15 @@ export async function submitAction(
 /**
  * Open a Server-Sent Events connection for real-time game state updates.
  *
+ * The SSE stream sends an initial `game` event with the current state
+ * immediately on connection, then pushes updates whenever the backend
+ * processes a move.  Keep-alive `: ping` comments are sent every 25 s.
+ *
  * @param gameId  The game to subscribe to.
  * @param onGame  Callback invoked on each `game` event.
- * @param onError Callback invoked when the connection fails.
+ * @param onError Callback invoked when the connection fails or is closed
+ *                unexpectedly.  The caller is responsible for deciding
+ *                whether to reconnect or fall back to polling.
  * @returns A cleanup function that closes the EventSource.
  */
 export function openGameEventSource(
@@ -110,7 +126,7 @@ export function openGameEventSource(
   onGame: (game: Game) => void,
   onError: (err: Event) => void,
 ): () => void {
-  const es = new EventSource(`/api/games/${gameId}/events`);
+  const es = new EventSource(`${API_BASE}/api/games/${gameId}/events`);
 
   es.addEventListener("game", (event: MessageEvent) => {
     try {

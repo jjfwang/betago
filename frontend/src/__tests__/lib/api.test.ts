@@ -184,3 +184,94 @@ describe("submitAction", () => {
     }
   });
 });
+
+describe("openGameEventSource", () => {
+  // We need to import openGameEventSource separately since the existing imports
+  // don't include it.
+  let openGameEventSource: typeof import("@/lib/api").openGameEventSource;
+
+  beforeAll(async () => {
+    ({ openGameEventSource } = await import("@/lib/api"));
+  });
+
+  /** Build a minimal EventSource mock. */
+  function makeEventSourceMock() {
+    const listeners: Record<string, ((event: MessageEvent) => void)[]> = {};
+    let errorHandler: ((event: Event) => void) | null = null;
+    const mock = {
+      addEventListener: jest.fn(
+        (type: string, handler: (event: MessageEvent) => void) => {
+          if (!listeners[type]) listeners[type] = [];
+          listeners[type].push(handler);
+        },
+      ),
+      set onerror(handler: (event: Event) => void) {
+        errorHandler = handler;
+      },
+      close: jest.fn(),
+      // Test helpers
+      _emit(type: string, data: unknown) {
+        const event = { data: JSON.stringify(data) } as MessageEvent;
+        (listeners[type] ?? []).forEach((h) => h(event));
+      },
+      _emitError() {
+        errorHandler?.(new Event("error"));
+      },
+    };
+    return mock;
+  }
+
+  let MockEventSource: ReturnType<typeof makeEventSourceMock>;
+
+  beforeEach(() => {
+    MockEventSource = makeEventSourceMock();
+    // Replace the global EventSource with the mock.
+    (global as unknown as Record<string, unknown>).EventSource = jest.fn(
+      () => MockEventSource,
+    );
+  });
+
+  afterEach(() => {
+    delete (global as unknown as Record<string, unknown>).EventSource;
+  });
+
+  it("opens an EventSource to /api/games/:id/events", () => {
+    openGameEventSource("game-42", jest.fn(), jest.fn());
+    expect(global.EventSource).toHaveBeenCalledWith(
+      "/api/games/game-42/events",
+    );
+  });
+
+  it("calls onGame callback when a game event is received", () => {
+    const onGame = jest.fn();
+    openGameEventSource("game-1", onGame, jest.fn());
+    const game = makeGame({ id: "game-1", turn_version: 7 });
+    MockEventSource._emit("game", game);
+    expect(onGame).toHaveBeenCalledWith(expect.objectContaining({ turn_version: 7 }));
+  });
+
+  it("calls onError callback when the connection errors", () => {
+    const onError = jest.fn();
+    openGameEventSource("game-1", jest.fn(), onError);
+    MockEventSource._emitError();
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it("returns a cleanup function that closes the EventSource", () => {
+    const close = openGameEventSource("game-1", jest.fn(), jest.fn());
+    close();
+    expect(MockEventSource.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call onGame for malformed JSON data", () => {
+    const onGame = jest.fn();
+    openGameEventSource("game-1", onGame, jest.fn());
+    // Emit a raw event with invalid JSON directly.
+    const badEvent = { data: "not-valid-json" } as MessageEvent;
+    const gameListeners = (MockEventSource.addEventListener as jest.Mock).mock.calls
+      .filter(([type]: [string]) => type === "game")
+      .map(([, handler]: [string, (e: MessageEvent) => void]) => handler);
+    gameListeners.forEach((h) => h(badEvent));
+    expect(onGame).not.toHaveBeenCalled();
+  });
+});
