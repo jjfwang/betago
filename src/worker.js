@@ -19,7 +19,7 @@
  *
  * The worker attempts to select a valid AI move up to `MAX_AI_RETRIES + 1`
  * times. On each attempt, the selected move is validated by the server-side
- * rule engine. If all attempts fail, the `deterministicPolicyMove` fallback
+ * rule engine. If all attempts fail, the `retryFallbackPolicyMove` fallback
  * from `src/ai/client.js` is used as a last resort. If even the fallback
  * fails (which should not happen for a valid game state), the game's
  * `ai_status` is set to `error`.
@@ -36,7 +36,7 @@ import * as defaultData from "./data.js";
 import { getGame, applyMove, getGameForApi, setDataModule } from "./game/service.js";
 import { ssePublish } from "./sse.js";
 import { listLegalPlacements } from "./game/rules.js";
-import { selectAIMove, deterministicPolicyMove } from "./ai/client.js";
+import { selectAIMove, retryFallbackPolicyMove } from "./ai/client.js";
 import { aiLog } from "./ai/logger.js";
 
 /**
@@ -80,7 +80,7 @@ const MAX_AI_RETRIES = Number.parseInt(process.env.MAX_AI_RETRIES ?? "2", 10);
  * 3. Calls `selectAIMove` to get a move from the configured AI provider.
  * 4. Validates the move against the rule engine via `applyMove`.
  * 5. Retries up to `MAX_AI_RETRIES` times on invalid moves.
- * 6. Falls back to `deterministicPolicyMove` if all retries fail.
+ * 6. Falls back to `retryFallbackPolicyMove` if all retries fail.
  * 7. Logs the AI turn result and publishes an SSE event.
  *
  * @param {string} gameId The ID of the game to process.
@@ -173,7 +173,7 @@ export async function processAiTurn(gameId, dataOverride) {
         retry_count: retryCount,
       });
 
-      const fallbackMove = deterministicPolicyMove(game, legalPlacements);
+      const fallbackMove = retryFallbackPolicyMove(game, legalPlacements);
       const fallbackResult = await applyMove(game, {
         player: "ai",
         action: fallbackMove.action,

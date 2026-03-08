@@ -288,6 +288,125 @@ export function deterministicPolicyMove(game, legalPlacements) {
   };
 }
 
+/**
+ * Selects a fallback move using a strict deterministic priority chain.
+ *
+ * This function is used exclusively as the **last-resort fallback** when the
+ * AI retry loop has been exhausted.  Unlike `deterministicPolicyMove`, which
+ * applies difficulty-level scoring to produce varied, skill-appropriate play,
+ * this function ignores difficulty and always follows the same fixed priority
+ * order to guarantee a valid, sensible move:
+ *
+ *   1. **Capture** – any legal move that captures at least one opponent stone.
+ *      When multiple capture moves exist, the one with the highest capture
+ *      count is preferred; ties are broken deterministically via seeded hash.
+ *   2. **Max liberties** – the legal move that results in the most liberties
+ *      for the placed group after the stone is placed.  Ties are broken
+ *      deterministically via seeded hash.
+ *   3. **Seeded random** – a deterministic pseudo-random selection from all
+ *      remaining legal moves, seeded by `game.id`, `game.turnVersion`, and
+ *      `game.moves.length` to ensure reproducibility.
+ *   4. **Auto-pass** – returned only when `legalPlacements` is empty.
+ *
+ * The seed key used for tie-breaking and random selection is:
+ *   `"<game.id>:<game.turnVersion>:<game.moves.length>:fallback"`
+ *
+ * @param {object} game            Current game state (id, boardSize, board,
+ *                                 positionHistory, turnVersion, moves).
+ * @param {Array<{x:number,y:number,captures:number}>} legalPlacements
+ *   Pre-computed list of legal placements from the rule engine.
+ * @returns {{ action: string, x?: number, y?: number, rationale: string }}
+ */
+export function retryFallbackPolicyMove(game, legalPlacements) {
+  // ── Priority 4: auto-pass when no legal placements exist ──────────────────
+  if (legalPlacements.length === 0) {
+    return {
+      action: "pass",
+      rationale: "No legal placements available; auto-passing as fallback.",
+    };
+  }
+
+  // Compute post-placement liberty counts for all legal moves.  We reuse the
+  // engine's `tryPlaceStone` result to avoid duplicating the board simulation.
+  const engine = new GoEngine(game.boardSize);
+  engine.board = game.board;
+  engine.history = game.positionHistory;
+
+  const scored = [];
+  for (const move of legalPlacements) {
+    const result = engine.tryPlaceStone(move.x, move.y, WHITE);
+    if (!result.ok) {
+      // Should not happen since `legalPlacements` is pre-validated, but guard
+      // defensively to avoid crashing the fallback path.
+      continue;
+    }
+    scored.push({
+      x: move.x,
+      y: move.y,
+      captures: move.captures,
+      liberties: result.engine._groupAndLiberties(move.x, move.y).liberties.size,
+    });
+  }
+
+  // If the engine rejected every candidate (should be impossible in practice),
+  // fall back to a raw seeded pick from the original list.
+  if (scored.length === 0) {
+    const seed = `${game.id}:${game.turnVersion}:${game.moves.length}:fallback`;
+    const raw = seededPick(legalPlacements, seed) ?? legalPlacements[0];
+    return {
+      action: "place",
+      x: raw.x,
+      y: raw.y,
+      rationale: "Fallback: seeded random move (raw).",
+    };
+  }
+
+  const seed = `${game.id}:${game.turnVersion}:${game.moves.length}:fallback`;
+
+  // ── Priority 1: capture ───────────────────────────────────────────────────
+  const captureMoves = scored.filter((m) => m.captures > 0);
+  if (captureMoves.length > 0) {
+    // Prefer the move with the highest capture count; break ties with seeded
+    // hash so the choice is deterministic across identical game states.
+    const maxCaptures = Math.max(...captureMoves.map((m) => m.captures));
+    const bestCaptures = captureMoves.filter((m) => m.captures === maxCaptures);
+    const chosen = seededPick(bestCaptures, seed) ?? bestCaptures[0];
+    return {
+      action: "place",
+      x: chosen.x,
+      y: chosen.y,
+      rationale: `Fallback: capturing ${chosen.captures} stone${chosen.captures === 1 ? "" : "s"}.`,
+    };
+  }
+
+  // ── Priority 2: max liberties ─────────────────────────────────────────────
+  const maxLiberties = Math.max(...scored.map((m) => m.liberties));
+  const bestLiberty = scored.filter((m) => m.liberties === maxLiberties);
+  if (bestLiberty.length === 1) {
+    const chosen = bestLiberty[0];
+    return {
+      action: "place",
+      x: chosen.x,
+      y: chosen.y,
+      rationale: `Fallback: move maximizing liberties (${chosen.liberties}).`,
+    };
+  }
+
+  // Multiple moves share the maximum liberty count – break the tie with the
+  // seeded hash before falling through to the general random selection.
+  const libertyTieChosen = seededPick(bestLiberty, seed) ?? bestLiberty[0];
+  // Only use the liberty-tie-break if it is strictly better than a plain
+  // random pick (i.e. there is a meaningful best group).  Since all candidates
+  // in `bestLiberty` share the same liberty count and we already know there
+  // are no capture moves, we can return this directly.
+  return {
+    action: "place",
+    x: libertyTieChosen.x,
+    y: libertyTieChosen.y,
+    rationale: `Fallback: move maximizing liberties (${libertyTieChosen.liberties}), tie broken by seed.`,
+  };
+}
+
 function shouldUseKataGoForLevel(game) {
   const level = normalizeDifficulty(game.aiLevel);
   if (level === "hard") {
