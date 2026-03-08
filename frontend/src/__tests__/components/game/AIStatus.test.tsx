@@ -9,6 +9,7 @@
  *  - Correct ARIA attributes for accessibility.
  *  - The `className` prop is forwarded to the root element.
  *  - Danger colour class applied for the `error` state.
+ *  - `retryCount` and `maxRetries` props for retry progress display.
  */
 
 import React from "react";
@@ -22,8 +23,20 @@ import type { AiStatus } from "@/types/game";
  * Renders `<AIStatus status={status} />` and returns the Testing Library
  * utilities for further assertions.
  */
-function renderStatus(status: AiStatus, className?: string) {
-  return render(<AIStatus status={status} className={className} />);
+function renderStatus(
+  status: AiStatus,
+  className?: string,
+  retryCount?: number,
+  maxRetries?: number,
+) {
+  return render(
+    <AIStatus
+      status={status}
+      className={className}
+      retryCount={retryCount}
+      maxRetries={maxRetries}
+    />,
+  );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -61,10 +74,12 @@ describe("AIStatus – thinking state", () => {
   });
 });
 
-describe("AIStatus – retrying state", () => {
-  it('shows "AI retrying…" label', () => {
+describe("AIStatus – retrying state (plain)", () => {
+  it('shows "AI retrying…" label without retry progress when props are omitted', () => {
     renderStatus("retrying");
     expect(screen.getByText(/AI retrying/i)).toBeInTheDocument();
+    // Should NOT show "(n/max)" format.
+    expect(screen.queryByText(/\(\d+\/\d+\)/)).toBeNull();
   });
 
   it("renders a spinner SVG (same as thinking)", () => {
@@ -73,12 +88,44 @@ describe("AIStatus – retrying state", () => {
     expect(svg).toBeInTheDocument();
   });
 
-  it("has aria-label describing retrying state", () => {
+  it("has aria-label describing retrying state without progress", () => {
     renderStatus("retrying");
     expect(screen.getByRole("status")).toHaveAttribute(
       "aria-label",
       "AI is retrying move selection",
     );
+  });
+});
+
+describe("AIStatus – retrying state (with retry progress)", () => {
+  it('shows "AI retrying… (1/2)" when retryCount=1 and maxRetries=2', () => {
+    renderStatus("retrying", undefined, 1, 2);
+    expect(screen.getByText(/AI retrying.*\(1\/2\)/)).toBeInTheDocument();
+  });
+
+  it('shows "AI retrying… (2/2)" on the final retry attempt', () => {
+    renderStatus("retrying", undefined, 2, 2);
+    expect(screen.getByText(/AI retrying.*\(2\/2\)/)).toBeInTheDocument();
+  });
+
+  it("has an aria-label with attempt progress when retryCount and maxRetries are provided", () => {
+    renderStatus("retrying", undefined, 1, 2);
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "aria-label",
+      "AI is retrying move selection, attempt 1 of 2",
+    );
+  });
+
+  it("falls back to plain label when only retryCount is provided (no maxRetries)", () => {
+    renderStatus("retrying", undefined, 1, undefined);
+    expect(screen.getByText(/AI retrying/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\(\d+\/\d+\)/)).toBeNull();
+  });
+
+  it("falls back to plain label when only maxRetries is provided (no retryCount)", () => {
+    renderStatus("retrying", undefined, undefined, 2);
+    expect(screen.getByText(/AI retrying/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\(\d+\/\d+\)/)).toBeNull();
   });
 });
 
@@ -202,6 +249,13 @@ describe("AIStatus – state transitions", () => {
     rerender(<AIStatus status="retrying" />);
     expect(screen.queryByText(/AI thinking/i)).toBeNull();
     expect(screen.getByText(/AI retrying/i)).toBeInTheDocument();
+  });
+
+  it("switches from retrying (plain) to retrying with progress", () => {
+    const { rerender } = render(<AIStatus status="retrying" />);
+    expect(screen.queryByText(/\(\d+\/\d+\)/)).toBeNull();
+    rerender(<AIStatus status="retrying" retryCount={2} maxRetries={2} />);
+    expect(screen.getByText(/AI retrying.*\(2\/2\)/)).toBeInTheDocument();
   });
 
   it("hides when status transitions to idle", () => {

@@ -1,8 +1,9 @@
 /**
  * GameView – top-level game layout component.
  *
- * Composes the GoBoard, GamePanel, TurnIndicator, AIStatus, and AppHeader
- * into the two-column layout described in the product plan.
+ * Composes the GoBoard, GamePanel, TurnIndicator, AIStatus, AppHeader,
+ * ErrorBanner, and AiErrorBanner into the two-column layout described in the
+ * product plan.
  *
  * This component is intentionally kept thin: it wires the store to the
  * presentational sub-components and handles the "last move" derivation.
@@ -20,6 +21,17 @@
  *    fallback notice before it fades.
  *  - Cancels any pending timer immediately when the status changes to a
  *    non-transient value (e.g. `"thinking"` for the next AI turn).
+ *
+ * ## AiErrorBanner integration
+ *
+ * In addition to the compact inline `AIStatus` badge, a more prominent
+ * `AiErrorBanner` is shown below the header whenever `ai_status === "error"`.
+ * This banner:
+ *
+ *  - Explains in plain language that the AI had trouble and a fallback was
+ *    applied (the game is still playable).
+ *  - Auto-dismisses after 8 s via `useAiError`.
+ *  - Can be dismissed immediately by the user.
  */
 
 "use client";
@@ -31,8 +43,10 @@ import { TurnIndicator } from "@/components/game/TurnIndicator";
 import { AIStatus } from "@/components/game/AIStatus";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { AiErrorBanner } from "@/components/ui/AiErrorBanner";
 import { useGame } from "@/hooks/useGame";
 import { useAiStatusTransition } from "@/hooks/useAiStatusTransition";
+import { useAiError } from "@/hooks/useAiError";
 
 export function GameView() {
   const {
@@ -53,6 +67,14 @@ export function GameView() {
    * automatically cleared after a short delay so the badge doesn't linger.
    */
   const displayAiStatus = useAiStatusTransition(aiStatus);
+
+  /**
+   * AI error banner state: shows a prominent, dismissible banner when the AI
+   * encounters an error and a fallback move is applied.  Auto-dismisses after
+   * 8 s so it does not permanently clutter the layout.
+   */
+  const { bannerVisible: aiErrorBannerVisible, dismissBanner: dismissAiError } =
+    useAiError(aiStatus);
 
   // Start or resume the game on mount.
   useEffect(() => {
@@ -95,8 +117,14 @@ export function GameView() {
           isLoading={isLoading}
         />
 
-        {/* Error banner */}
+        {/* Generic error banner (network / API errors) */}
         <ErrorBanner message={errorMessage} onDismiss={clearError} />
+
+        {/* AI error banner – shown when the AI fails and a fallback is applied */}
+        <AiErrorBanner
+          visible={aiErrorBannerVisible}
+          onDismiss={dismissAiError}
+        />
 
         {/* Two-column layout: board + panel */}
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">

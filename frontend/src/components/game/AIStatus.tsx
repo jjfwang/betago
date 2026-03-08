@@ -6,7 +6,7 @@
  * treatment:
  *
  *  - `thinking`  – animated spinner with "AI thinking…" label
- *  - `retrying`  – animated spinner with "AI retrying…" label (fallback path)
+ *  - `retrying`  – animated spinner with "AI retrying… (n/max)" label (fallback path)
  *  - `done`      – checkmark icon with "AI move complete" label (auto-fades)
  *  - `error`     – warning icon with "AI error – using fallback" in danger colour
  *  - `idle`/null – renders nothing
@@ -29,6 +29,17 @@ import type { AiStatus } from "@/types/game";
 export interface AIStatusProps {
   /** Current AI processing status received from the game state. */
   status: AiStatus;
+  /**
+   * Current retry attempt number (1-based) shown when `status === "retrying"`.
+   * When provided alongside `maxRetries`, renders as "AI retrying… (n/max)".
+   * Omit to show a plain "AI retrying…" label.
+   */
+  retryCount?: number;
+  /**
+   * Maximum number of retry attempts.  Used together with `retryCount` to
+   * render a progress indicator (e.g., "AI retrying… (1/2)").
+   */
+  maxRetries?: number;
   /** Optional additional CSS class names for layout positioning. */
   className?: string;
 }
@@ -41,21 +52,32 @@ export interface AIStatusProps {
  * Returns `null` when `status` is `null` or `"idle"` so the component can be
  * placed unconditionally in the layout without reserving space.
  */
-export function AIStatus({ status, className = "" }: AIStatusProps) {
+export function AIStatus({
+  status,
+  retryCount,
+  maxRetries,
+  className = "",
+}: AIStatusProps) {
   if (!status || status === "idle") return null;
 
   return (
     <span
       role="status"
       aria-live="polite"
-      aria-label={ariaLabel(status)}
+      aria-label={ariaLabel(status, retryCount, maxRetries)}
       className={`inline-flex items-center gap-1.5 text-xs font-medium ${className}`}
     >
-      {(status === "thinking" || status === "retrying") && (
+      {status === "thinking" && (
+        <>
+          <Spinner />
+          <span className="text-ink-muted">AI thinking\u2026</span>
+        </>
+      )}
+      {status === "retrying" && (
         <>
           <Spinner />
           <span className="text-ink-muted">
-            {status === "thinking" ? "AI thinking\u2026" : "AI retrying\u2026"}
+            {retryingLabel(retryCount, maxRetries)}
           </span>
         </>
       )}
@@ -79,12 +101,35 @@ export function AIStatus({ status, className = "" }: AIStatusProps) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Builds the label text shown when `status === "retrying"`.
+ *
+ * When both `retryCount` and `maxRetries` are provided the label includes a
+ * progress indicator so the user knows how many attempts remain.
+ */
+function retryingLabel(
+  retryCount?: number,
+  maxRetries?: number,
+): string {
+  if (retryCount !== undefined && maxRetries !== undefined) {
+    return `AI retrying\u2026 (${retryCount}/${maxRetries})`;
+  }
+  return "AI retrying\u2026";
+}
+
 /** Returns a descriptive aria-label for each status value. */
-function ariaLabel(status: NonNullable<AiStatus>): string {
+function ariaLabel(
+  status: NonNullable<AiStatus>,
+  retryCount?: number,
+  maxRetries?: number,
+): string {
   switch (status) {
     case "thinking":
       return "AI is thinking";
     case "retrying":
+      if (retryCount !== undefined && maxRetries !== undefined) {
+        return `AI is retrying move selection, attempt ${retryCount} of ${maxRetries}`;
+      }
       return "AI is retrying move selection";
     case "done":
       return "AI move complete";
