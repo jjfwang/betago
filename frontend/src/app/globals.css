@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base resets ──────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Shared component classes ─────────────────────────────────────────────── */
+
+@layer components {
+  /**
+   * .btn – base button style.
+   * Variants: .ghost (transparent background), .danger (red accent).
+   */
+  .btn {
+    @apply inline-flex items-center justify-center
+           border border-ink-faint bg-surface text-ink-DEFAULT
+           font-semibold text-sm
+           rounded-pill px-4 py-2
+           cursor-pointer
+           transition-colors duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed
+           hover:border-[rgba(23,22,20,0.45)];
+  }
+
+  .btn.ghost {
+    @apply bg-transparent;
+  }
+
+  .btn.danger {
+    @apply border-[rgba(163,52,47,0.42)] text-danger
+           hover:border-danger;
+  }
+}

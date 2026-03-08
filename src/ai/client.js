@@ -1,9 +1,17 @@
-import { groupLibertyCount, tryPlaceStone, WHITE } from "../game/rules.js";
+import { GoEngine, WHITE } from "../game/engine.js";
 import { requestKataGoMove } from "./katago.js";
 import { aiLog, aiLogPrompt } from "./logger.js";
+import { validateAIAction } from "./schema.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
+const PROMPT_VERSION = "1.0";
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
+
+let testProvider = null;
+
+export function setTestProvider(provider) {
+  testProvider = provider;
+}
 
 function asInt(v) {
   if (typeof v === "number" && Number.isInteger(v)) {
@@ -21,25 +29,22 @@ function normalizeDifficulty(value) {
 }
 
 function parseAIAction(raw) {
-  if (!raw || typeof raw !== "object") {
+  const valid = validateAIAction(raw);
+  if (!valid) {
+    aiLog("ai_action.invalid_schema", {
+      errors: validateAIAction.errors,
+      raw_input: raw,
+    });
     return null;
   }
-  const action = typeof raw.action === "string" ? raw.action.toLowerCase() : null;
-  if (!["place", "pass", "resign"].includes(action)) {
-    return null;
-  }
-  const x = asInt(raw.x);
-  const y = asInt(raw.y);
+
   const rationale = typeof raw.rationale === "string" ? raw.rationale.slice(0, 240) : "";
 
-  if (action === "place") {
-    if (x === null || y === null) {
-      return null;
-    }
-    return { action, x, y, rationale };
+  if (raw.action === "place") {
+    return { action: "place", x: raw.x, y: raw.y, rationale };
   }
 
-  return { action, rationale };
+  return { action: raw.action, rationale };
 }
 
 async function postJson(url, body, headers = {}) {
@@ -73,6 +78,7 @@ async function requestExternalMove(game, legalPlacements) {
 
   const legal = legalPlacements.map((m) => ({ x: m.x, y: m.y }));
   const payload = {
+    prompt_version: PROMPT_VERSION,
     game_id: game.id,
     board_size: game.boardSize,
     turn: "ai",
@@ -132,6 +138,7 @@ async function requestExternalMove(game, legalPlacements) {
       move: parsed,
       responseId: result?.response_id ?? result?.id ?? null,
       model: result?.model ?? "external-api",
+      promptVersion: PROMPT_VERSION,
     };
   } catch (error) {
     aiLog("external.response.error", {
@@ -148,6 +155,7 @@ async function requestExternalMove(game, legalPlacements) {
 }
 
 function resolveProvider() {
+  if (testProvider) return "test";
   const explicit = process.env.AI_PROVIDER?.trim().toLowerCase();
   if (explicit) {
     return explicit;
@@ -200,15 +208,13 @@ function pickMoveByLevel(game, legalPlacements, level) {
     return null;
   }
 
+  const engine = new GoEngine(game.boardSize);
+  engine.board = game.board;
+  engine.history = game.positionHistory;
+
   const scored = [];
   for (const move of legalPlacements) {
-    const result = tryPlaceStone({
-      board: game.board,
-      x: move.x,
-      y: move.y,
-      color: WHITE,
-      positionHistory: game.positionHistory,
-    });
+    const result = engine.tryPlaceStone(move.x, move.y, WHITE);
     if (!result.ok) {
       continue;
     }
@@ -217,7 +223,7 @@ function pickMoveByLevel(game, legalPlacements, level) {
       x: move.x,
       y: move.y,
       captures: move.captures,
-      liberties: groupLibertyCount(result.board, move.x, move.y),
+      liberties: result.engine._groupAndLiberties(move.x, move.y).liberties.size,
     });
   }
 
@@ -289,16 +295,79 @@ export function deterministicPolicyMove(game, legalPlacements) {
   };
 }
 
+export function retryFallbackPolicyMove(game, legalPlacements) {
+  if (legalPlacements.length === 0) {
+    return {
+      action: "pass",
+      rationale: "No legal placements available; auto-passing as fallback.",
+    };
+  }
+
+  const engine = new GoEngine(game.boardSize);
+  engine.board = game.board;
+  engine.history = game.positionHistory;
+
+  const scored = [];
+  for (const move of legalPlacements) {
+    const result = engine.tryPlaceStone(move.x, move.y, WHITE);
+    if (result.ok) {
+      scored.push({
+        ...move,
+        liberties: result.engine._groupAndLiberties(move.x, move.y).liberties.size,
+      });
+    }
+  }
+
+  if (scored.length === 0) {
+    return {
+      action: "pass",
+      rationale: "No legal placements available; auto-passing as fallback.",
+    };
+  }
+
+  const seed = `${game.id}:${game.turnVersion}:${game.moves.length}:fallback`;
+
+  const captures = scored.filter((m) => m.captures > 0);
+  if (captures.length > 0) {
+    const maxCaptures = Math.max(...captures.map((m) => m.captures));
+    const bestCaptures = captures.filter((m) => m.captures === maxCaptures);
+    const chosen = seededPick(bestCaptures, seed) ?? bestCaptures[0];
+    return {
+      action: "place",
+      x: chosen.x,
+      y: chosen.y,
+      rationale: `Fallback: capture move with ${chosen.captures} capture${chosen.captures > 1 ? "s" : ""}.`,
+    };
+  }
+
+  const maxLiberties = Math.max(...scored.map((m) => m.liberties));
+  const bestLiberty = scored.filter((m) => m.liberties === maxLiberties);
+  if (bestLiberty.length === 1) {
+    const chosen = bestLiberty[0];
+    return {
+      action: "place",
+      x: chosen.x,
+      y: chosen.y,
+      rationale: `Fallback: move maximizing liberties (${chosen.liberties}).`,
+    };
+  }
+
+  const libertyTieChosen = seededPick(bestLiberty, seed) ?? bestLiberty[0];
+  return {
+    action: "place",
+    x: libertyTieChosen.x,
+    y: libertyTieChosen.y,
+    rationale: `Fallback: move maximizing liberties (${libertyTieChosen.liberties}), tie broken by seed.`,
+  };
+}
+
 function shouldUseKataGoForLevel(game) {
   const level = normalizeDifficulty(game.aiLevel);
   if (level === "hard") {
     return true;
   }
-
   const key = `${game.id}:${game.turnVersion}:${game.moves.length}:katago:${level}`;
   const roll = seededHash(key) % 100;
-
-  // entry uses KataGo only occasionally; medium uses it half the time.
   if (level === "entry") {
     return roll < 20;
   }
@@ -314,6 +383,11 @@ export async function selectAIMove(game, legalPlacements) {
     ai_level: normalizeDifficulty(game.aiLevel),
     legal_moves_count: legalPlacements.length,
   });
+
+  if (provider === "test") {
+    const move = await testProvider(game, legalPlacements);
+    return { ...move, source: "test-provider" };
+  }
 
   if (provider === "katago") {
     if (shouldUseKataGoForLevel(game)) {
@@ -331,9 +405,9 @@ export async function selectAIMove(game, legalPlacements) {
           source: "katago",
           responseId: kata.responseId,
           model: kata.model,
+          promptVersion: "katago-gtp",
         };
       }
-
       const fallback = deterministicPolicyMove(game, legalPlacements);
       aiLog("provider.fallback", {
         provider: "katago",
@@ -346,10 +420,10 @@ export async function selectAIMove(game, legalPlacements) {
         source: "katago",
         externalError: kata?.reason ?? "katago_failed",
         model: "deterministic-policy",
+        promptVersion: "deterministic-policy",
         responseId: null,
       };
     }
-
     const fallback = deterministicPolicyMove(game, legalPlacements);
     aiLog("provider.result", {
       provider: "deterministic",
@@ -363,6 +437,7 @@ export async function selectAIMove(game, legalPlacements) {
       source: "deterministic",
       externalError: null,
       model: "deterministic-policy",
+      promptVersion: "deterministic-policy",
       responseId: null,
     };
   }
@@ -382,9 +457,9 @@ export async function selectAIMove(game, legalPlacements) {
         source: external.source,
         responseId: external.responseId,
         model: external.model,
+        promptVersion: PROMPT_VERSION,
       };
     }
-
     const fallback = deterministicPolicyMove(game, legalPlacements);
     aiLog("provider.fallback", {
       provider: "external",
@@ -397,6 +472,7 @@ export async function selectAIMove(game, legalPlacements) {
       source: external?.source ?? "external",
       externalError: external?.reason ?? "external_failed",
       model: "deterministic-policy",
+      promptVersion: "deterministic-policy",
       responseId: null,
     };
   }
@@ -414,6 +490,7 @@ export async function selectAIMove(game, legalPlacements) {
     source: "deterministic",
     externalError: null,
     model: "deterministic-policy",
+    promptVersion: "deterministic-policy",
     responseId: null,
   };
 }

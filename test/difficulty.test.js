@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { deterministicPolicyMove } from "../src/ai/client.js";
-import { BLACK, WHITE, boardHash, createEmptyBoard, listLegalPlacements } from "../src/game/rules.js";
-import { normalizeAiLevel } from "../src/game/engine.js";
+import { BLACK, WHITE, GoEngine } from "../src/game/engine.js";
+import { createEmptyBoard, boardHash } from "../src/game/rules.js";
+import { normalizeAiLevel } from "../src/game/service.js";
 
 function buildCaptureScenario() {
   const board = createEmptyBoard(5);
@@ -14,11 +15,10 @@ function buildCaptureScenario() {
   board[3][2] = WHITE;
 
   const history = new Set([boardHash(board)]);
-  const legalPlacements = listLegalPlacements({
-    board,
-    color: WHITE,
-    positionHistory: history,
-  });
+  const engine = new GoEngine(board.length);
+  engine.board = board;
+  engine.history = history;
+  const legalPlacements = engine.listLegalPlacements(WHITE);
 
   return { board, history, legalPlacements };
 }
