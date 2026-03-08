@@ -12,10 +12,87 @@ import {
 
 const app = express();
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
+const HOST = process.env.HOST ?? "0.0.0.0";
 const SESSION_COOKIE = "bg_session_id";
+const ENABLE_CORS = (process.env.ENABLE_CORS ?? "true").trim().toLowerCase() !== "false";
+const CORS_ALLOW_PRIVATE_LAN = (process.env.CORS_ALLOW_PRIVATE_LAN ?? "true").trim().toLowerCase() !== "false";
+const CORS_ALLOWED_ORIGINS = new Set(
+  (process.env.CORS_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+
+function originHostname(origin) {
+  try {
+    return new URL(origin).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isPrivateOrLocalHostname(hostname) {
+  if (!hostname) {
+    return false;
+  }
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+    return true;
+  }
+  if (/^192\.168\./.test(hostname)) {
+    return true;
+  }
+  if (/^10\./.test(hostname)) {
+    return true;
+  }
+  const match172 = hostname.match(/^172\.(\d{1,3})\./);
+  if (match172) {
+    const second = Number.parseInt(match172[1], 10);
+    if (second >= 16 && second <= 31) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) {
+    return true;
+  }
+  if (CORS_ALLOWED_ORIGINS.has(origin)) {
+    return true;
+  }
+  if (!CORS_ALLOW_PRIVATE_LAN) {
+    return false;
+  }
+  return isPrivateOrLocalHostname(originHostname(origin));
+}
 
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
+
+if (ENABLE_CORS) {
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const allowed = isAllowedOrigin(origin);
+
+    if (origin && allowed) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        req.headers["access-control-request-headers"] || "Content-Type, Authorization",
+      );
+    }
+
+    if (req.method === "OPTIONS") {
+      return res.status(allowed ? 204 : 403).end();
+    }
+
+    return next();
+  });
+}
 
 app.use((req, res, next) => {
   const existing = req.cookies?.[SESSION_COOKIE];
@@ -127,7 +204,7 @@ app.get("*", (_req, res) => {
   res.sendFile("index.html", { root: "public" });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
-  console.log(`betago server listening on http://localhost:${PORT}`);
+  console.log(`betago server listening on http://${HOST}:${PORT}`);
 });

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { aiLog, aiLogVerbose } from "./logger.js";
 
 const GTP_LETTERS = "ABCDEFGHJKLMNOPQRST";
 const KATAGO_TIMEOUT_MS = Number.parseInt(process.env.KATAGO_TIMEOUT_MS ?? "15000", 10);
@@ -139,6 +140,12 @@ class KataGoSession {
     this.lastUsedAt = Date.now();
 
     const spec = processSpec();
+    aiLog("katago.session.start", {
+      game_id: this.gameId,
+      command: spec.command,
+      args: spec.args,
+      shell: spec.shell,
+    });
     this.proc = spawn(spec.command, spec.args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: spec.shell,
@@ -205,6 +212,7 @@ class KataGoSession {
 
     const id = this.nextCommandId;
     this.nextCommandId += 1;
+    aiLogVerbose("katago.gtp.send", { game_id: this.gameId, id, command });
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -261,6 +269,11 @@ class KataGoSession {
 
     const payload = await this.send("genmove W");
     const token = (payload.split(/\s+/)[0] ?? "").trim();
+    aiLog("katago.genmove.raw", {
+      game_id: this.gameId,
+      turn_version: game.turnVersion,
+      token,
+    });
 
     // Keep engine state aligned to authoritative server board.
     try {
@@ -274,6 +287,7 @@ class KataGoSession {
   }
 
   shutdown(reason) {
+    aiLog("katago.session.stop", { game_id: this.gameId, reason });
     this.closed = true;
 
     for (const pending of this.pending.values()) {
@@ -339,6 +353,12 @@ export function releaseKataGoSession(gameId) {
 
 export async function requestKataGoMove(game) {
   const session = getSession(game.id);
+  aiLog("katago.request.start", {
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    ai_level: game.aiLevel,
+    moves: game.moves.length,
+  });
 
   try {
     const token = await session.genmoveForGame(game);
@@ -348,6 +368,13 @@ export async function requestKataGoMove(game) {
     }
 
     if (parsed.action === "place") {
+      aiLog("katago.request.result", {
+        game_id: game.id,
+        turn_version: game.turnVersion,
+        action: "place",
+        x: parsed.x,
+        y: parsed.y,
+      });
       return {
         valid: true,
         move: {
@@ -371,6 +398,11 @@ export async function requestKataGoMove(game) {
       responseId: null,
     };
   } catch (error) {
+    aiLog("katago.request.error", {
+      game_id: game.id,
+      turn_version: game.turnVersion,
+      error: error.message,
+    });
     session.shutdown(error.message);
     sessions.delete(game.id);
     return { valid: false, reason: error.message };

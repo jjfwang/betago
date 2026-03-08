@@ -1,5 +1,6 @@
 import { groupLibertyCount, tryPlaceStone, WHITE } from "../game/rules.js";
 import { requestKataGoMove } from "./katago.js";
+import { aiLog, aiLogPrompt } from "./logger.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
@@ -95,12 +96,35 @@ async function requestExternalMove(game, legalPlacements) {
     headers.Authorization = `Bearer ${process.env.LLM_API_KEY}`;
   }
 
+  aiLog("external.request.start", {
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    ai_level: normalizeDifficulty(game.aiLevel),
+    endpoint: url,
+    legal_moves_count: legal.length,
+  });
+  aiLogPrompt("external.request.payload", payload);
+
   try {
     const result = await postJson(url, payload, headers);
     const parsed = parseAIAction(result?.action ? result : result?.data ?? result?.output);
     if (!parsed) {
+      aiLog("external.response.malformed", {
+        game_id: game.id,
+        turn_version: game.turnVersion,
+      });
       return { source: "external", valid: false, reason: "malformed" };
     }
+
+    aiLog("external.response.ok", {
+      game_id: game.id,
+      turn_version: game.turnVersion,
+      model: result?.model ?? "external-api",
+      response_id: result?.response_id ?? result?.id ?? null,
+      action: parsed.action,
+      x: parsed.x ?? null,
+      y: parsed.y ?? null,
+    });
 
     return {
       source: "external",
@@ -110,6 +134,11 @@ async function requestExternalMove(game, legalPlacements) {
       model: result?.model ?? "external-api",
     };
   } catch (error) {
+    aiLog("external.response.error", {
+      game_id: game.id,
+      turn_version: game.turnVersion,
+      error: error?.name === "AbortError" ? "timeout" : error.message,
+    });
     return {
       source: "external",
       valid: false,
@@ -278,11 +307,25 @@ function shouldUseKataGoForLevel(game) {
 
 export async function selectAIMove(game, legalPlacements) {
   const provider = resolveProvider();
+  aiLog("provider.selected", {
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    provider,
+    ai_level: normalizeDifficulty(game.aiLevel),
+    legal_moves_count: legalPlacements.length,
+  });
 
   if (provider === "katago") {
     if (shouldUseKataGoForLevel(game)) {
       const kata = await requestKataGoMove(game);
       if (kata?.valid) {
+        aiLog("provider.result", {
+          provider: "katago",
+          game_id: game.id,
+          turn_version: game.turnVersion,
+          model: kata.model,
+          action: kata.move?.action,
+        });
         return {
           ...kata.move,
           source: "katago",
@@ -292,6 +335,12 @@ export async function selectAIMove(game, legalPlacements) {
       }
 
       const fallback = deterministicPolicyMove(game, legalPlacements);
+      aiLog("provider.fallback", {
+        provider: "katago",
+        game_id: game.id,
+        turn_version: game.turnVersion,
+        reason: kata?.reason ?? "katago_failed",
+      });
       return {
         ...fallback,
         source: "katago",
@@ -302,6 +351,13 @@ export async function selectAIMove(game, legalPlacements) {
     }
 
     const fallback = deterministicPolicyMove(game, legalPlacements);
+    aiLog("provider.result", {
+      provider: "deterministic",
+      game_id: game.id,
+      turn_version: game.turnVersion,
+      action: fallback.action,
+      ai_level: normalizeDifficulty(game.aiLevel),
+    });
     return {
       ...fallback,
       source: "deterministic",
@@ -314,6 +370,13 @@ export async function selectAIMove(game, legalPlacements) {
   if (provider === "external") {
     const external = await requestExternalMove(game, legalPlacements);
     if (external?.valid) {
+      aiLog("provider.result", {
+        provider: "external",
+        game_id: game.id,
+        turn_version: game.turnVersion,
+        model: external.model,
+        action: external.move?.action,
+      });
       return {
         ...external.move,
         source: external.source,
@@ -323,6 +386,12 @@ export async function selectAIMove(game, legalPlacements) {
     }
 
     const fallback = deterministicPolicyMove(game, legalPlacements);
+    aiLog("provider.fallback", {
+      provider: "external",
+      game_id: game.id,
+      turn_version: game.turnVersion,
+      reason: external?.reason ?? "external_failed",
+    });
     return {
       ...fallback,
       source: external?.source ?? "external",
@@ -333,6 +402,13 @@ export async function selectAIMove(game, legalPlacements) {
   }
 
   const deterministic = deterministicPolicyMove(game, legalPlacements);
+  aiLog("provider.result", {
+    provider: "deterministic",
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    action: deterministic.action,
+    ai_level: normalizeDifficulty(game.aiLevel),
+  });
   return {
     ...deterministic,
     source: "deterministic",

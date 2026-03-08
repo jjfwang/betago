@@ -19,6 +19,30 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+## LAN Access (192.168.x.x)
+
+To access from other devices on your local network, set:
+
+```bash
+HOST=0.0.0.0
+ENABLE_CORS=true
+CORS_ALLOW_PRIVATE_LAN=true
+```
+
+Then open from another device using:
+
+```text
+http://<your-machine-lan-ip>:3000
+```
+
+Example:
+
+```text
+http://192.168.1.23:3000
+```
+
+If you need strict CORS allowlisting, set `CORS_ALLOWED_ORIGINS` to a comma-separated list of exact origins.
+
 ## Local Frontend Assets
 
 - WGo is vendored locally at `public/vendor/wgo.js`.
@@ -87,6 +111,20 @@ npm run dev
 ```
 
 If KataGo fails or times out, the app uses deterministic fallback for that move.
+
+## AI Runtime Logging
+
+You can inspect which provider/model is used per move and payload details:
+
+```bash
+AI_LOG_ENABLED=true
+AI_LOG_PROMPT=true
+AI_LOG_VERBOSE=false
+```
+
+- `AI_LOG_ENABLED=true`: logs provider selection and move results (`deterministic` / `external` / `katago`, model, action).
+- `AI_LOG_PROMPT=true`: logs external provider request payload (prompt-like context sent to your model endpoint).
+- `AI_LOG_VERBOSE=true`: logs low-level KataGo GTP commands (very noisy).
 
 ## API Summary
 
