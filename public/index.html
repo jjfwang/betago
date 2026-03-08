@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetaGo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="board-card">
+        <header class="board-header">
+          <div>
+            <h1>BetaGo</h1>
+            <p id="statusText">Loading game...</p>
+          </div>
+          <div class="header-actions">
+            <label for="aiLevelSelect" class="level-label">Level</label>
+            <select id="aiLevelSelect" class="level-select">
+              <option value="entry">Entry</option>
+              <option value="medium" selected>Medium</option>
+              <option value="hard">Hard</option>
+            </select>
+            <button id="newGameBtn" class="btn ghost">New Game</button>
+          </div>
+        </header>
+
+        <div id="boardWrap" class="board-wrap"></div>
+
+        <div class="controls">
+          <button id="passBtn" class="btn">Pass</button>
+          <button id="resignBtn" class="btn danger">Resign</button>
+        </div>
+
+        <div id="message" class="message" aria-live="polite"></div>
+      </section>
+
+      <aside class="panel-card">
+        <h2>Game Info</h2>
+        <dl class="meta-grid">
+          <dt>Turn</dt>
+          <dd id="turnText">-</dd>
+          <dt>Version</dt>
+          <dd id="turnVersionText">-</dd>
+          <dt>AI Status</dt>
+          <dd id="aiStatusText">-</dd>
+          <dt>Level</dt>
+          <dd id="aiLevelText">-</dd>
+          <dt>Captures</dt>
+          <dd id="captureText">-</dd>
+          <dt>Winner</dt>
+          <dd id="winnerText">-</dd>
+        </dl>
+
+        <h3>Move History</h3>
+        <ol id="moveList" class="move-list"></ol>
+      </aside>
+    </main>
+
+    <script src="/vendor/wgo.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
