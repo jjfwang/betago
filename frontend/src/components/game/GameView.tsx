@@ -7,9 +7,19 @@
  * This component is intentionally kept thin: it wires the store to the
  * presentational sub-components and handles the "last move" derivation.
  *
- * The `AIStatus` component receives its `status` prop from the `aiStatus`
- * selector exposed by `useGame`, ensuring it always reflects the latest
- * backend-reported AI processing state without any additional local state.
+ * ## AIStatus integration
+ *
+ * The raw `ai_status` field from the game object is surfaced via the
+ * `selectAiStatus` selector in `useGame`.  Before passing it to `<AIStatus />`
+ * we run it through `useAiStatusTransition`, which:
+ *
+ *  - Normalises `"idle"` → `null` (no badge shown).
+ *  - Auto-clears `"done"` after 2 s so the badge disappears once the user
+ *    has registered the AI move.
+ *  - Auto-clears `"error"` after 4 s, giving the user time to read the
+ *    fallback notice before it fades.
+ *  - Cancels any pending timer immediately when the status changes to a
+ *    non-transient value (e.g. `"thinking"` for the next AI turn).
  */
 
 "use client";
@@ -22,6 +32,7 @@ import { AIStatus } from "@/components/game/AIStatus";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { useGame } from "@/hooks/useGame";
+import { useAiStatusTransition } from "@/hooks/useAiStatusTransition";
 
 export function GameView() {
   const {
@@ -36,6 +47,12 @@ export function GameView() {
     resign,
     clearError,
   } = useGame();
+
+  /**
+   * Display-ready AI status: transient states (`"done"`, `"error"`) are
+   * automatically cleared after a short delay so the badge doesn't linger.
+   */
+  const displayAiStatus = useAiStatusTransition(aiStatus);
 
   // Start or resume the game on mount.
   useEffect(() => {
@@ -89,13 +106,12 @@ export function GameView() {
             <div className="flex items-center justify-between gap-2 min-h-[1.5rem]">
               <TurnIndicator game={game} />
               {/*
-               * AIStatus receives the AI processing status directly from the
-               * store via the `aiStatus` selector in `useGame`.  When the
-               * backend transitions the game to `ai_thinking`, the SSE stream
-               * (or the action response) will push an updated game object into
-               * the store, which in turn updates `aiStatus` here.
+               * `displayAiStatus` is the auto-cleared version of `aiStatus`:
+               *  - "done"  fades after 2 s
+               *  - "error" fades after 4 s
+               *  - "thinking" / "retrying" persist until the backend updates
                */}
-              <AIStatus status={aiStatus} />
+              <AIStatus status={displayAiStatus} />
             </div>
 
             {/* Board */}
