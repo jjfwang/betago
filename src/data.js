@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Data access layer for BetaGo.
+ *
+ * All database interactions go through this module.  Every function operates
+ * on the shared Knex instance imported from ./db.js.
+ */
 import { randomUUID } from "node:crypto";
 import db from "./db.js";
 
@@ -39,6 +45,31 @@ export async function getGameById(gameId) {
   return await db("games").where({ id: gameId }).first();
 }
 
+/**
+ * Returns the most recent active (non-finished) game for a session, or null.
+ * @param {string} sessionId
+ * @returns {Promise<object|null>}
+ */
+export async function getActiveGameBySessionId(sessionId) {
+  return await db("games")
+    .where({ session_id: sessionId })
+    .whereNot({ status: "finished" })
+    .orderBy("created_at", "desc")
+    .first();
+}
+
+/**
+ * Returns the most recent game for a session regardless of status, or null.
+ * @param {string} sessionId
+ * @returns {Promise<object|null>}
+ */
+export async function getLatestGameBySessionId(sessionId) {
+  return await db("games")
+    .where({ session_id: sessionId })
+    .orderBy("created_at", "desc")
+    .first();
+}
+
 export async function getMovesByGameId(gameId) {
   return await db("moves").where({ game_id: gameId }).orderBy("move_index");
 }
@@ -65,6 +96,15 @@ export async function logAITurn(data) {
   return log;
 }
 
+/**
+ * Look up a previously recorded action request by its client-supplied action_id.
+ * @param {string} actionId
+ * @returns {Promise<object|undefined>}
+ */
+export async function findActionRequestByActionId(actionId) {
+  return await db("action_requests").where({ action_id: actionId }).first();
+}
+
 export async function recordActionRequest(data) {
   const id = randomUUID();
   const request = {
@@ -74,6 +114,10 @@ export async function recordActionRequest(data) {
   };
   await db("action_requests").insert(request);
   return request;
+}
+
+export async function updateActionRequest(actionId, data) {
+  await db("action_requests").where({ action_id: actionId }).update(data);
 }
 
 export async function updateGame(gameId, data) {

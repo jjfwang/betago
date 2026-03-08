@@ -71,6 +71,11 @@ test("games table exists with required columns", async () => {
     assert.ok(columns.turn_version, "turn_version column must exist");
     assert.ok(columns.created_at, "created_at column must exist");
     assert.ok(columns.updated_at, "updated_at column must exist");
+    // Columns added by the api_fields migration.
+    assert.ok(columns.ai_level, "ai_level column must exist");
+    assert.ok("pending_action" in columns, "pending_action column must exist");
+    assert.ok(columns.ai_status, "ai_status column must exist");
+    assert.ok("score_detail" in columns, "score_detail column must exist");
   } finally {
     await db.destroy();
   }
@@ -89,6 +94,8 @@ test("moves table exists with required columns", async () => {
     assert.ok(columns.captures, "captures column must exist");
     assert.ok(columns.board_hash, "board_hash column must exist");
     assert.ok(columns.created_at, "created_at column must exist");
+    // Column added by the api_fields migration.
+    assert.ok("rationale" in columns, "rationale column must exist");
   } finally {
     await db.destroy();
   }

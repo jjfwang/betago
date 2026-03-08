@@ -7,7 +7,24 @@
  * database for each operation.
  */
 
-import * as data from '../data.js';
+import * as defaultData from '../data.js';
+
+/**
+ * The active data module.  Defaults to the real data module but can be
+ * overridden in tests via `setDataModule()`.
+ * @type {object}
+ */
+let data = defaultData;
+
+/**
+ * Override the data module used by this service.
+ * Intended for use in integration tests that inject an in-memory database.
+ * @param {object} module  A data module with the same API as `../data.js`.
+ */
+export function setDataModule(module) {
+  data = module;
+}
+
 import {
   BLACK,
   WHITE,
@@ -18,10 +35,11 @@ import {
   chineseAreaScore,
 } from './rules.js';
 
-const DEFAULT_BOARD_SIZE = 18;
+const DEFAULT_BOARD_SIZE = 9;
 const DEFAULT_KOMI = 5.5;
 const DEFAULT_AI_LEVEL = 'medium';
 const AI_LEVELS = new Set(['entry', 'medium', 'hard']);
+const MAX_MOVES_IN_PAYLOAD = Number.parseInt(process.env.MAX_MOVES_IN_PAYLOAD ?? '160', 10);
 
 /** The Go board alphabet, which skips the letter 'I'. */
 const BOARD_ALPHABET = 'ABCDEFGHJKLMNOPQRST';
@@ -58,17 +76,12 @@ function fromCoordinateLabel(label, size) {
 }
 
 /**
- * Hydrates a full game state from the database.
- * @param {string} gameId The ID of the game to load.
- * @returns {Promise<object|null>} A promise that resolves to the full game state object, or null if not found.
+ * Hydrates board state from a list of moves.
+ * @param {object} gameRecord  Raw row from the games table.
+ * @param {Array}  moves       Ordered move rows.
+ * @returns {object}
  */
-export async function getGame(gameId) {
-  const gameRecord = await data.getGameById(gameId);
-  if (!gameRecord) {
-    return null;
-  }
-
-  const moves = await data.getMovesByGameId(gameId);
+function hydrateBoard(gameRecord, moves) {
   let board = createEmptyBoard(gameRecord.board_size);
   const positionHistory = new Set([boardHash(board)]);
   const captures = { human: 0, ai: 0 };
@@ -104,15 +117,136 @@ export async function getGame(gameId) {
     }
   }
 
+  return { board, positionHistory, captures, consecutivePasses };
+}
+
+/**
+ * Formats a raw game record + hydrated state into the full API response shape
+ * expected by the frontend.
+ *
+ * @param {object} gameRecord  Raw row from the games table.
+ * @param {Array}  moves       Full ordered move list.
+ * @param {object} hydrated    Result of hydrateBoard().
+ * @returns {object}           API-ready game object.
+ */
+function formatGameForApi(gameRecord, moves, hydrated) {
+  const { board, positionHistory, captures } = hydrated;
+
+  // Determine whose turn it is (human = B, ai = W).
+  const turn = moves.length % 2 === 0 ? 'B' : 'W';
+
+  // Compute legal placements for the human player (only when it is their turn).
+  let legalMoves = [];
+  if (gameRecord.status === 'human_turn') {
+    legalMoves = listLegalPlacements({
+      board,
+      color: BLACK,
+      positionHistory,
+    }).map(({ x, y }) => ({ x, y }));
+  }
+
+  // Truncate move list if it exceeds the payload cap.
+  const moveCount = moves.length;
+  const movesTruncated = moveCount > MAX_MOVES_IN_PAYLOAD;
+  const movesPayload = movesTruncated ? moves.slice(-MAX_MOVES_IN_PAYLOAD) : moves;
+
+  // Find the last AI rationale.
+  let lastAiRationale = null;
+  for (let i = moves.length - 1; i >= 0; i--) {
+    if (moves[i].player === 'ai' && moves[i].rationale) {
+      lastAiRationale = moves[i].rationale;
+      break;
+    }
+  }
+
+  // Parse score_detail if present.
+  let scoreDetail = null;
+  if (gameRecord.score_detail) {
+    try {
+      scoreDetail = JSON.parse(gameRecord.score_detail);
+    } catch {
+      // ignore malformed JSON
+    }
+  }
+
+  // Map winner from internal ('human'/'ai') to stone colour ('B'/'W').
+  let winner = null;
+  if (gameRecord.winner === 'human') {
+    winner = 'B';
+  } else if (gameRecord.winner === 'ai') {
+    winner = 'W';
+  }
+
+  return {
+    id: gameRecord.id,
+    board_size: gameRecord.board_size,
+    komi: gameRecord.komi,
+    ai_level: gameRecord.ai_level ?? DEFAULT_AI_LEVEL,
+    status: gameRecord.status,
+    winner,
+    turn,
+    turn_version: gameRecord.turn_version,
+    pending_action: gameRecord.pending_action ?? null,
+    ai_status: gameRecord.ai_status ?? 'idle',
+    captures: {
+      B: captures.human,
+      W: captures.ai,
+    },
+    board,
+    legal_moves: legalMoves,
+    moves: movesPayload,
+    move_count: moveCount,
+    moves_truncated: movesTruncated,
+    last_ai_rationale: lastAiRationale,
+    score_detail: scoreDetail,
+  };
+}
+
+/**
+ * Hydrates a full game state from the database.
+ * Returns the internal game object (not the API shape).
+ *
+ * @param {string} gameId The ID of the game to load.
+ * @returns {Promise<object|null>}
+ */
+export async function getGame(gameId) {
+  const gameRecord = await data.getGameById(gameId);
+  if (!gameRecord) {
+    return null;
+  }
+
+  const moves = await data.getMovesByGameId(gameId);
+  const hydrated = hydrateBoard(gameRecord, moves);
+
   return {
     ...gameRecord,
-    board,
+    board: hydrated.board,
     moves,
-    positionHistory,
-    captures,
-    consecutivePasses,
+    positionHistory: hydrated.positionHistory,
+    captures: hydrated.captures,
+    consecutivePasses: hydrated.consecutivePasses,
     turn: moves.length % 2 === 0 ? 'human' : 'ai',
+    // Camel-cased aliases used by the AI client.
+    boardSize: gameRecord.board_size,
+    aiLevel: gameRecord.ai_level ?? DEFAULT_AI_LEVEL,
+    turnVersion: gameRecord.turn_version,
   };
+}
+
+/**
+ * Returns the full API-ready game payload for a game id.
+ *
+ * @param {string} gameId
+ * @returns {Promise<object|null>}
+ */
+export async function getGameForApi(gameId) {
+  const gameRecord = await data.getGameById(gameId);
+  if (!gameRecord) {
+    return null;
+  }
+  const moves = await data.getMovesByGameId(gameId);
+  const hydrated = hydrateBoard(gameRecord, moves);
+  return formatGameForApi(gameRecord, moves, hydrated);
 }
 
 /**
@@ -123,12 +257,20 @@ export async function getGame(gameId) {
  * @param {number} [options.komi=5.5] The komi.
  * @returns {Promise<object>} A promise that resolves to the newly created game object.
  */
-export async function createGame({ sessionId, boardSize = DEFAULT_BOARD_SIZE, komi = DEFAULT_KOMI }) {
+export async function createGame({
+  sessionId,
+  boardSize = DEFAULT_BOARD_SIZE,
+  komi = DEFAULT_KOMI,
+  aiLevel = DEFAULT_AI_LEVEL,
+}) {
   const gameData = {
     session_id: sessionId,
     board_size: boardSize,
     komi,
+    ai_level: normalizeAiLevel(aiLevel),
     status: 'human_turn',
+    ai_status: 'idle',
+    pending_action: null,
     turn_version: 0,
   };
   const game = await data.createGame(gameData);
@@ -176,10 +318,17 @@ export async function applyMove(game, move) {
       coordinate: `${BOARD_ALPHABET[move.x] ?? '?'}${game.board_size - move.y}`,
       captures: result.captures,
       board_hash: result.hash,
+      rationale: move.rationale ?? null,
     });
 
     const nextTurn = move.player === 'human' ? 'ai_thinking' : 'human_turn';
-    await data.updateGame(game.id, { status: nextTurn, turn_version: game.turn_version + 1 });
+    const aiStatus = move.player === 'human' ? 'thinking' : 'done';
+    await data.updateGame(game.id, {
+      status: nextTurn,
+      turn_version: game.turn_version + 1,
+      ai_status: aiStatus,
+      pending_action: null,
+    });
 
   } else if (move.action === 'pass') {
     await data.createMove({
@@ -189,15 +338,29 @@ export async function applyMove(game, move) {
       action: 'pass',
       captures: 0,
       board_hash: boardHash(game.board),
+      rationale: move.rationale ?? null,
     });
 
     if (game.consecutivePasses + 1 >= 2) {
       const score = chineseAreaScore(game.board, game.komi);
       const winner = score.winner === BLACK ? 'human' : 'ai';
-      await data.updateGame(game.id, { status: 'finished', winner, turn_version: game.turn_version + 1 });
+      await data.updateGame(game.id, {
+        status: 'finished',
+        winner,
+        turn_version: game.turn_version + 1,
+        ai_status: 'done',
+        pending_action: null,
+        score_detail: JSON.stringify(score.detail),
+      });
     } else {
       const nextTurn = move.player === 'human' ? 'ai_thinking' : 'human_turn';
-      await data.updateGame(game.id, { status: nextTurn, turn_version: game.turn_version + 1 });
+      const aiStatus = move.player === 'human' ? 'thinking' : 'done';
+      await data.updateGame(game.id, {
+        status: nextTurn,
+        turn_version: game.turn_version + 1,
+        ai_status: aiStatus,
+        pending_action: null,
+      });
     }
   } else if (move.action === 'resign') {
     await data.createMove({
@@ -207,10 +370,17 @@ export async function applyMove(game, move) {
       action: 'resign',
       captures: 0,
       board_hash: boardHash(game.board),
+      rationale: move.rationale ?? null,
     });
 
     const winner = move.player === 'human' ? 'ai' : 'human';
-    await data.updateGame(game.id, { status: 'finished', winner, turn_version: game.turn_version + 1 });
+    await data.updateGame(game.id, {
+      status: 'finished',
+      winner,
+      turn_version: game.turn_version + 1,
+      ai_status: 'done',
+      pending_action: null,
+    });
   }
 
   return { ok: true };
