@@ -1,26 +1,11 @@
 /**
  * @fileoverview Stateless game service for orchestrating game logic.
- *
- * This module provides functions for creating, retrieving, and updating game
- * state by interacting with the database and the rule engine. It is designed
- * to be stateless, meaning that all necessary game data is loaded from the
- * database for each operation.
  */
 
 import * as defaultData from '../data.js';
 
-/**
- * The active data module.  Defaults to the real data module but can be
- * overridden in tests via `setDataModule()`.
- * @type {object}
- */
 let data = defaultData;
 
-/**
- * Override the data module used by this service.
- * Intended for use in integration tests that inject an in-memory database.
- * @param {object} module  A data module with the same API as `../data.js`.
- */
 export function setDataModule(module) {
   data = module;
 }
@@ -40,26 +25,13 @@ const DEFAULT_KOMI = 5.5;
 const DEFAULT_AI_LEVEL = 'medium';
 const AI_LEVELS = new Set(['entry', 'medium', 'hard']);
 const MAX_MOVES_IN_PAYLOAD = Number.parseInt(process.env.MAX_MOVES_IN_PAYLOAD ?? '160', 10);
-
-/** The Go board alphabet, which skips the letter 'I'. */
 const BOARD_ALPHABET = 'ABCDEFGHJKLMNOPQRST';
 
-/**
- * Normalizes an AI level string to one of the valid levels.
- * @param {string|undefined} level The raw AI level value.
- * @returns {'entry'|'medium'|'hard'} The normalized AI level.
- */
 export function normalizeAiLevel(level) {
   const value = typeof level === 'string' ? level.trim().toLowerCase() : '';
   return AI_LEVELS.has(value) ? value : DEFAULT_AI_LEVEL;
 }
 
-/**
- * Converts a coordinate label (e.g., 'D4') to an {x, y} object.
- * @param {string} label The coordinate label.
- * @param {number} size The board size.
- * @returns {{x: number, y: number}|null} The {x, y} coordinates or null if invalid.
- */
 function fromCoordinateLabel(label, size) {
   if (!label || typeof label !== 'string' || label.length < 2) {
     return null;
@@ -75,12 +47,6 @@ function fromCoordinateLabel(label, size) {
   return { x, y };
 }
 
-/**
- * Hydrates board state from a list of moves.
- * @param {object} gameRecord  Raw row from the games table.
- * @param {Array}  moves       Ordered move rows.
- * @returns {object}
- */
 export function hydrateBoard(gameRecord, moves) {
   let board = createEmptyBoard(gameRecord.board_size);
   const positionHistory = new Set([boardHash(board)]);
@@ -120,22 +86,9 @@ export function hydrateBoard(gameRecord, moves) {
   return { board, positionHistory, captures, consecutivePasses };
 }
 
-/**
- * Formats a raw game record + hydrated state into the full API response shape
- * expected by the frontend.
- *
- * @param {object} gameRecord  Raw row from the games table.
- * @param {Array}  moves       Full ordered move list.
- * @param {object} hydrated    Result of hydrateBoard().
- * @returns {object}           API-ready game object.
- */
 function formatGameForApi(gameRecord, moves, hydrated) {
   const { board, positionHistory, captures } = hydrated;
-
-  // Determine whose turn it is (human = B, ai = W).
   const turn = moves.length % 2 === 0 ? 'B' : 'W';
-
-  // Compute legal placements for the human player (only when it is their turn).
   let legalMoves = [];
   if (gameRecord.status === 'human_turn') {
     legalMoves = listLegalPlacements({
@@ -145,12 +98,9 @@ function formatGameForApi(gameRecord, moves, hydrated) {
     }).map(({ x, y }) => ({ x, y }));
   }
 
-  // Truncate move list if it exceeds the payload cap.
   const moveCount = moves.length;
   const movesTruncated = moveCount > MAX_MOVES_IN_PAYLOAD;
   const movesPayload = movesTruncated ? moves.slice(-MAX_MOVES_IN_PAYLOAD) : moves;
-
-  // Find the last AI rationale.
   let lastAiRationale = null;
   for (let i = moves.length - 1; i >= 0; i--) {
     if (moves[i].player === 'ai' && moves[i].rationale) {
@@ -159,17 +109,13 @@ function formatGameForApi(gameRecord, moves, hydrated) {
     }
   }
 
-  // Parse score_detail if present.
   let scoreDetail = null;
   if (gameRecord.score_detail) {
     try {
       scoreDetail = JSON.parse(gameRecord.score_detail);
-    } catch {
-      // ignore malformed JSON
-    }
+    } catch {}
   }
 
-  // Map winner from internal ('human'/'ai') to stone colour ('B'/'W').
   let winner = null;
   if (gameRecord.winner === 'human') {
     winner = 'B';
@@ -202,13 +148,6 @@ function formatGameForApi(gameRecord, moves, hydrated) {
   };
 }
 
-/**
- * Hydrates a full game state from the database.
- * Returns the internal game object (not the API shape).
- *
- * @param {string} gameId The ID of the game to load.
- * @returns {Promise<object|null>}
- */
 export async function getGame(gameId) {
   const gameRecord = await data.getGameById(gameId);
   if (!gameRecord) {
@@ -226,19 +165,12 @@ export async function getGame(gameId) {
     captures: hydrated.captures,
     consecutivePasses: hydrated.consecutivePasses,
     turn: moves.length % 2 === 0 ? 'human' : 'ai',
-    // Camel-cased aliases used by the AI client.
     boardSize: gameRecord.board_size,
     aiLevel: gameRecord.ai_level ?? DEFAULT_AI_LEVEL,
     turnVersion: gameRecord.turn_version,
   };
 }
 
-/**
- * Returns the full API-ready game payload for a game id.
- *
- * @param {string} gameId
- * @returns {Promise<object|null>}
- */
 export async function getGameForApi(gameId) {
   const gameRecord = await data.getGameById(gameId);
   if (!gameRecord) {
@@ -249,14 +181,6 @@ export async function getGameForApi(gameId) {
   return formatGameForApi(gameRecord, moves, hydrated);
 }
 
-/**
- * Creates a new game and stores it in the database.
- * @param {object} options
- * @param {string} options.sessionId The session ID of the user creating the game.
- * @param {number} [options.boardSize=18] The board size.
- * @param {number} [options.komi=5.5] The komi.
- * @returns {Promise<object>} A promise that resolves to the newly created game object.
- */
 export async function createGame({
   sessionId,
   boardSize = DEFAULT_BOARD_SIZE,
@@ -277,16 +201,6 @@ export async function createGame({
   return game;
 }
 
-/**
- * Applies a player's move to the game state.
- * @param {object} game The current game state.
- * @param {object} move The move to apply.
- * @param {string} move.player The player making the move ("human" or "ai").
- * @param {string} move.action The action to perform ("place", "pass", or "resign").
- * @param {number} [move.x] The x-coordinate for a "place" action.
- * @param {number} [move.y] The y-coordinate for a "place" action.
- * @returns {Promise<{ok: boolean, reason?: string}>} A promise that resolves to an object indicating success or failure.
- */
 export async function applyMove(game, move) {
   if (game.status !== 'human_turn' && move.player === 'human') {
     return { ok: false, reason: 'not_your_turn' };
@@ -329,6 +243,7 @@ export async function applyMove(game, move) {
       ai_status: aiStatus,
       pending_action: null,
     });
+    return { ok: true };
 
   } else if (move.action === 'pass') {
     await data.createMove({
@@ -362,6 +277,8 @@ export async function applyMove(game, move) {
         pending_action: null,
       });
     }
+    return { ok: true };
+
   } else if (move.action === 'resign') {
     await data.createMove({
       game_id: game.id,
@@ -381,7 +298,8 @@ export async function applyMove(game, move) {
       ai_status: 'done',
       pending_action: null,
     });
+    return { ok: true };
   }
 
-  return { ok: true };
+  return { ok: false, reason: 'invalid_action' };
 }
