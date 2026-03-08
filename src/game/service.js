@@ -81,7 +81,7 @@ function fromCoordinateLabel(label, size) {
  * @param {Array}  moves       Ordered move rows.
  * @returns {object}
  */
-function hydrateBoard(gameRecord, moves) {
+export function hydrateBoard(gameRecord, moves) {
   let board = createEmptyBoard(gameRecord.board_size);
   const positionHistory = new Set([boardHash(board)]);
   const captures = { human: 0, ai: 0 };
