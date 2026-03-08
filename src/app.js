@@ -51,125 +51,10 @@ import {
   setDataModule,
 } from "./game/service.js";
 import * as defaultData from "./data.js";
-import { selectAIMove } from "./ai/client.js";
-import { listLegalPlacements } from "./game/rules.js";
+import { sseSubscribe, sseUnsubscribe } from "./sse.js";
+import { processAiTurn } from "./worker.js";
 
 const SESSION_COOKIE = "bg_session_id";
-
-// ---------------------------------------------------------------------------
-// SSE subscriber registry (module-level so it persists across requests)
-// ---------------------------------------------------------------------------
-
-/**
- * Map of gameId -> Set of SSE response objects.
- * @type {Map<string, Set<import('express').Response>>}
- */
-const sseSubscribers = new Map();
-
-function sseSubscribe(gameId, res) {
-  if (!sseSubscribers.has(gameId)) {
-    sseSubscribers.set(gameId, new Set());
-  }
-  sseSubscribers.get(gameId).add(res);
-}
-
-function sseUnsubscribe(gameId, res) {
-  sseSubscribers.get(gameId)?.delete(res);
-}
-
-/**
- * Publish a game state update to all SSE subscribers for a game.
- * @param {string} gameId
- * @param {object} gamePayload
- */
-export function ssePublish(gameId, gamePayload) {
-  const subscribers = sseSubscribers.get(gameId);
-  if (!subscribers || subscribers.size === 0) return;
-  const payload = `data: ${JSON.stringify(gamePayload)}\n\n`;
-  for (const res of subscribers) {
-    try {
-      res.write(`event: game\n${payload}`);
-    } catch {
-      subscribers.delete(res);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// AI background worker
-// ---------------------------------------------------------------------------
-
-/**
- * Run the AI turn for a game asynchronously.
- * @param {string} gameId
- * @param {object} data  Data module (injected for testing).
- */
-async function runAiTurn(gameId, data) {
-  try {
-    await data.updateGame(gameId, { ai_status: "thinking" });
-
-    const game = await getGame(gameId);
-    if (!game) return;
-    if (game.status !== "ai_thinking") return;
-
-    const legalPlacements = listLegalPlacements({
-      board: game.board,
-      color: "W",
-      positionHistory: game.positionHistory,
-    });
-
-    let aiMove;
-    try {
-      aiMove = await selectAIMove(game, legalPlacements);
-    } catch {
-      await data.updateGame(gameId, { ai_status: "error" });
-      const errorPayload = await getGameForApi(gameId);
-      if (errorPayload) ssePublish(gameId, errorPayload);
-      return;
-    }
-
-    try {
-      await data.logAITurn({
-        game_id: gameId,
-        move_index: game.moves.length,
-        model: aiMove.model ?? null,
-        prompt_version: null,
-        response_id: aiMove.responseId ?? null,
-        retry_count: 0,
-        fallback_used: aiMove.source !== "external" && aiMove.source !== "katago",
-        latency_ms: null,
-        external_error: aiMove.externalError ?? null,
-        status: "ok",
-        error_code: null,
-      });
-    } catch {
-      // Non-critical.
-    }
-
-    const result = await applyMove(game, {
-      player: "ai",
-      action: aiMove.action,
-      x: aiMove.x,
-      y: aiMove.y,
-      rationale: aiMove.rationale ?? null,
-    });
-
-    if (!result.ok) {
-      await data.updateGame(gameId, { ai_status: "error" });
-    }
-
-    const updatedPayload = await getGameForApi(gameId);
-    if (updatedPayload) ssePublish(gameId, updatedPayload);
-  } catch {
-    try {
-      await data.updateGame(gameId, { ai_status: "error" });
-      const errorPayload = await getGameForApi(gameId);
-      if (errorPayload) ssePublish(gameId, errorPayload);
-    } catch {
-      // Nothing more we can do.
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Idempotency helpers
@@ -439,8 +324,10 @@ export function createApp({ data = defaultData } = {}) {
       const gamePayload = await getGameForApi(req.params.id);
       res.status(200).json({ game: gamePayload, idempotent: false });
 
+      // Trigger the AI turn asynchronously after the response is sent.
+      // Pass the injected data module so tests can use their in-memory DB.
       if (gamePayload.status === "ai_thinking") {
-        setImmediate(() => runAiTurn(req.params.id, data));
+        setImmediate(() => processAiTurn(req.params.id, data));
       }
     } catch (err) {
       next(err);

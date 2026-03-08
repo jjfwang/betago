@@ -120,6 +120,26 @@ function buildDataModule(db) {
     async updateGame(gameId, data) {
       await db("games").where({ id: gameId }).update({ ...data, updated_at: new Date() });
     },
+    async acquireAiTurnLock(gameId, timeoutMs) {
+      const now = new Date();
+      const timeout = new Date(now.getTime() - timeoutMs);
+      const result = await db("games")
+        .where({ id: gameId, status: "ai_thinking" })
+        .andWhere(function () {
+          this.whereNull("ai_turn_locked_at").orWhere("ai_turn_locked_at", "<", timeout);
+        })
+        .update({ ai_turn_locked_at: now, ai_turn_worker_id: "test-worker" });
+      return result > 0;
+    },
+    async releaseAiTurnLock(gameId) {
+      await db("games").where({ id: gameId }).update({
+        ai_turn_locked_at: null,
+        ai_turn_worker_id: null,
+      });
+    },
+    async getGamesForAiProcessing() {
+      return db("games").where({ status: "ai_thinking" }).select("id");
+    },
   };
 }
 

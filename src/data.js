@@ -126,3 +126,56 @@ export async function updateGame(gameId, data) {
     updated_at: new Date(),
   });
 }
+
+const WORKER_ID = randomUUID();
+
+/**
+ * Fetches games that are ready for AI processing.
+ * @returns {Promise<Array<object>>}
+ */
+export async function getGamesForAiProcessing() {
+  const now = new Date();
+  const timeout = new Date(now.getTime() - 30000); // 30 seconds ago
+
+  return await db("games")
+    .where({ status: "ai_thinking" })
+    .andWhere(function () {
+      this.whereNull("ai_turn_locked_at").orWhere("ai_turn_locked_at", "<", timeout);
+    })
+    .select("id");
+}
+
+/**
+ * Acquires a lock on a game for AI turn processing.
+ * @param {string} gameId The ID of the game to lock.
+ * @param {number} timeoutMs The lock timeout in milliseconds.
+ * @returns {Promise<boolean>} A promise that resolves to true if the lock was acquired.
+ */
+export async function acquireAiTurnLock(gameId, timeoutMs) {
+  const now = new Date();
+  const timeout = new Date(now.getTime() - timeoutMs);
+
+  const result = await db("games")
+    .where({ id: gameId, status: "ai_thinking" })
+    .andWhere(function () {
+      this.whereNull("ai_turn_locked_at").orWhere("ai_turn_locked_at", "<", timeout);
+    })
+    .update({
+      ai_turn_locked_at: now,
+      ai_turn_worker_id: WORKER_ID,
+    });
+
+  return result > 0;
+}
+
+/**
+ * Releases the AI turn lock on a game.
+ * @param {string} gameId The ID of the game to release the lock on.
+ * @returns {Promise<void>}
+ */
+export async function releaseAiTurnLock(gameId) {
+  await db("games").where({ id: gameId, ai_turn_worker_id: WORKER_ID }).update({
+    ai_turn_locked_at: null,
+    ai_turn_worker_id: null,
+  });
+}
