@@ -1,4 +1,4 @@
-import { groupLibertyCount, tryPlaceStone, WHITE } from "../game/rules.js";
+import { GoEngine, WHITE } from "../game/engine.js";
 import { requestKataGoMove } from "./katago.js";
 import { aiLog, aiLogPrompt } from "./logger.js";
 
@@ -200,15 +200,13 @@ function pickMoveByLevel(game, legalPlacements, level) {
     return null;
   }
 
+  const engine = new GoEngine(game.boardSize);
+  engine.board = game.board;
+  engine.history = game.positionHistory;
+
   const scored = [];
   for (const move of legalPlacements) {
-    const result = tryPlaceStone({
-      board: game.board,
-      x: move.x,
-      y: move.y,
-      color: WHITE,
-      positionHistory: game.positionHistory,
-    });
+    const result = engine.tryPlaceStone(move.x, move.y, WHITE);
     if (!result.ok) {
       continue;
     }
@@ -217,7 +215,7 @@ function pickMoveByLevel(game, legalPlacements, level) {
       x: move.x,
       y: move.y,
       captures: move.captures,
-      liberties: groupLibertyCount(result.board, move.x, move.y),
+      liberties: result.engine._groupAndLiberties(move.x, move.y).liberties.size,
     });
   }
 
