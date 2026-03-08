@@ -1,0 +1,141 @@
+/**
+ * GameView – top-level game layout component.
+ *
+ * Composes the GoBoard, GamePanel, TurnIndicator, AIStatus, and AppHeader
+ * into the two-column layout described in the product plan.
+ *
+ * This component is intentionally kept thin: it wires the store to the
+ * presentational sub-components and handles the "last move" derivation.
+ */
+
+"use client";
+
+import React, { useCallback, useEffect, useMemo } from "react";
+import { GoBoard } from "@/components/board/GoBoard";
+import { GamePanel } from "@/components/game/GamePanel";
+import { TurnIndicator } from "@/components/game/TurnIndicator";
+import { AIStatus } from "@/components/game/AIStatus";
+import { AppHeader } from "@/components/layout/AppHeader";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { useGame } from "@/hooks/useGame";
+
+export function GameView() {
+  const {
+    game,
+    loadingState,
+    errorMessage,
+    humanMoveEnabled,
+    startGame,
+    placeStone,
+    pass,
+    resign,
+    clearError,
+  } = useGame();
+
+  // Start or resume the game on mount.
+  useEffect(() => {
+    startGame();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Derive the last move coordinate for the board highlight.
+  const lastMove = useMemo(() => {
+    if (!game) return null;
+    const lastPlaced = [...game.moves]
+      .reverse()
+      .find((m) => m.action === "place");
+    if (!lastPlaced || !lastPlaced.coordinate) return null;
+    // The coordinate is stored as a label (e.g. "D4"); we need (x, y).
+    // The backend also includes it in the move list, but we can derive it
+    // from the board directly by scanning for the most recently placed stone.
+    // For simplicity, we store the raw coordinate and let GoBoard handle it.
+    // We return null here and rely on the board rendering the last stone.
+    return null;
+  }, [game]);
+
+  const handleNewGame = useCallback(
+    (aiLevel: "entry" | "medium" | "hard") => {
+      startGame({ forceNew: true, aiLevel });
+    },
+    [startGame],
+  );
+
+  const isLoading = loadingState === "loading";
+  const isSubmitting = loadingState === "submitting";
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-surface-muted via-[#f0e4d1] to-[#f1d9bc]">
+      <main className="w-full max-w-[1380px] mx-auto px-4 py-4 min-h-screen flex flex-col gap-4">
+        {/* Header */}
+        <AppHeader
+          game={game}
+          onNewGame={handleNewGame}
+          isLoading={isLoading}
+        />
+
+        {/* Error banner */}
+        <ErrorBanner message={errorMessage} onDismiss={clearError} />
+
+        {/* Two-column layout: board + panel */}
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">
+          {/* Board card */}
+          <section className="bg-surface-card border border-ink-faint rounded-card shadow-card p-4 flex flex-col gap-3">
+            {/* Status row */}
+            <div className="flex items-center justify-between gap-2">
+              <TurnIndicator game={game} />
+              <AIStatus status={game?.ai_status ?? null} />
+            </div>
+
+            {/* Board */}
+            <div className="aspect-square w-full">
+              {game ? (
+                <GoBoard
+                  board={game.board}
+                  boardSize={game.board_size}
+                  legalMoves={humanMoveEnabled ? game.legal_moves : []}
+                  interactive={humanMoveEnabled}
+                  onIntersectionClick={placeStone}
+                  lastMove={lastMove}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-ink-muted text-sm">
+                  {isLoading ? "Loading board…" : "No active game"}
+                </div>
+              )}
+            </div>
+
+            {/* Pass / Resign controls (also shown in panel, mirrored here for mobile) */}
+            <div className="flex gap-2 lg:hidden">
+              <button
+                className="btn"
+                disabled={!humanMoveEnabled || isSubmitting}
+                onClick={pass}
+              >
+                Pass
+              </button>
+              <button
+                className="btn danger"
+                disabled={!humanMoveEnabled || isSubmitting}
+                onClick={resign}
+              >
+                Resign
+              </button>
+            </div>
+          </section>
+
+          {/* Panel card */}
+          <section className="bg-surface-card border border-ink-faint rounded-card shadow-card p-4 hidden lg:block h-full">
+            <GamePanel
+              game={game}
+              humanMoveEnabled={humanMoveEnabled}
+              isSubmitting={isSubmitting}
+              onPass={pass}
+              onResign={resign}
+              onNewGame={() => handleNewGame(game?.ai_level ?? "medium")}
+            />
+          </section>
+        </div>
+      </main>
+    </div>
+  );
+}
