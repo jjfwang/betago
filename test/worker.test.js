@@ -512,6 +512,118 @@ test.describe("AI Worker – processAiTurn", () => {
     assert.strictEqual(logs[0].retry_count, 0, "Retry count should be 0 on first success");
   });
 
+  test("logs the AI turn with prompt_version from the move result", async () => {
+    const session = await testData.createSession();
+    const game = await testData.createGame({
+      session_id: session.id,
+      board_size: 9,
+      komi: 5.5,
+      status: "ai_thinking",
+      ai_status: "thinking",
+      ai_level: "medium",
+      turn_version: 1,
+    });
+
+    await processAiTurn(game.id, testData);
+
+    const logs = await db("ai_turn_logs").where({ game_id: game.id });
+    assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
+    // The deterministic provider always sets promptVersion to 'deterministic-policy'.
+    assert.strictEqual(
+      logs[0].prompt_version,
+      "deterministic-policy",
+      "prompt_version should be 'deterministic-policy' for the deterministic provider",
+    );
+  });
+
+  test("logs fallback_used as false when AI succeeds on first attempt", async () => {
+    const session = await testData.createSession();
+    const game = await testData.createGame({
+      session_id: session.id,
+      board_size: 9,
+      komi: 5.5,
+      status: "ai_thinking",
+      ai_status: "thinking",
+      ai_level: "medium",
+      turn_version: 1,
+    });
+
+    await processAiTurn(game.id, testData);
+
+    const logs = await db("ai_turn_logs").where({ game_id: game.id });
+    assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
+    // The deterministic provider returns source='deterministic', which is considered
+    // the primary path (not a fallback triggered by retry exhaustion).
+    assert.ok(
+      logs[0].fallback_used === 0 || logs[0].fallback_used === false,
+      "fallback_used should be false when AI succeeds on first attempt",
+    );
+  });
+
+  test("logs latency_ms as a non-negative integer", async () => {
+    const session = await testData.createSession();
+    const game = await testData.createGame({
+      session_id: session.id,
+      board_size: 9,
+      komi: 5.5,
+      status: "ai_thinking",
+      ai_status: "thinking",
+      ai_level: "medium",
+      turn_version: 1,
+    });
+
+    await processAiTurn(game.id, testData);
+
+    const logs = await db("ai_turn_logs").where({ game_id: game.id });
+    assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
+    assert.ok(
+      typeof logs[0].latency_ms === "number" && logs[0].latency_ms >= 0,
+      `latency_ms should be a non-negative number, got: ${logs[0].latency_ms}`,
+    );
+  });
+
+  test("logs the model name in ai_turn_logs", async () => {
+    const session = await testData.createSession();
+    const game = await testData.createGame({
+      session_id: session.id,
+      board_size: 9,
+      komi: 5.5,
+      status: "ai_thinking",
+      ai_status: "thinking",
+      ai_level: "medium",
+      turn_version: 1,
+    });
+
+    await processAiTurn(game.id, testData);
+
+    const logs = await db("ai_turn_logs").where({ game_id: game.id });
+    assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
+    assert.ok(
+      typeof logs[0].model === "string" && logs[0].model.length > 0,
+      `model should be a non-empty string, got: ${logs[0].model}`,
+    );
+  });
+
+  test("logs move_index correctly in ai_turn_logs", async () => {
+    const session = await testData.createSession();
+    const game = await testData.createGame({
+      session_id: session.id,
+      board_size: 9,
+      komi: 5.5,
+      status: "ai_thinking",
+      ai_status: "thinking",
+      ai_level: "medium",
+      turn_version: 1,
+    });
+
+    await processAiTurn(game.id, testData);
+
+    const logs = await db("ai_turn_logs").where({ game_id: game.id });
+    assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
+    // The game starts with no moves, so the AI's move_index should be 0.
+    assert.strictEqual(logs[0].move_index, 0, "move_index should be 0 for the first AI move");
+  });
+
   test("two consecutive passes end the game", async () => {
     const session = await testData.createSession();
     const game = await testData.createGame({
@@ -547,3 +659,4 @@ test.describe("AI Worker – processAiTurn", () => {
     );
   });
 });
+

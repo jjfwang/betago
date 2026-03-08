@@ -4,6 +4,7 @@ import { aiLog, aiLogPrompt } from "./logger.js";
 import { validateAIAction } from "./schema.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
+const PROMPT_VERSION = "1.0";
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
 
 function asInt(v) {
@@ -71,6 +72,7 @@ async function requestExternalMove(game, legalPlacements) {
 
   const legal = legalPlacements.map((m) => ({ x: m.x, y: m.y }));
   const payload = {
+    prompt_version: PROMPT_VERSION,
     game_id: game.id,
     board_size: game.boardSize,
     turn: "ai",
@@ -130,6 +132,7 @@ async function requestExternalMove(game, legalPlacements) {
       move: parsed,
       responseId: result?.response_id ?? result?.id ?? null,
       model: result?.model ?? "external-api",
+      promptVersion: PROMPT_VERSION,
     };
   } catch (error) {
     aiLog("external.response.error", {
@@ -327,6 +330,7 @@ export async function selectAIMove(game, legalPlacements) {
           source: "katago",
           responseId: kata.responseId,
           model: kata.model,
+          promptVersion: "katago-gtp",
         };
       }
 
@@ -342,6 +346,7 @@ export async function selectAIMove(game, legalPlacements) {
         source: "katago",
         externalError: kata?.reason ?? "katago_failed",
         model: "deterministic-policy",
+        promptVersion: "deterministic-policy",
         responseId: null,
       };
     }
@@ -359,6 +364,7 @@ export async function selectAIMove(game, legalPlacements) {
       source: "deterministic",
       externalError: null,
       model: "deterministic-policy",
+      promptVersion: "deterministic-policy",
       responseId: null,
     };
   }
@@ -378,6 +384,7 @@ export async function selectAIMove(game, legalPlacements) {
         source: external.source,
         responseId: external.responseId,
         model: external.model,
+        promptVersion: PROMPT_VERSION,
       };
     }
 
@@ -393,6 +400,7 @@ export async function selectAIMove(game, legalPlacements) {
       source: external?.source ?? "external",
       externalError: external?.reason ?? "external_failed",
       model: "deterministic-policy",
+      promptVersion: "deterministic-policy",
       responseId: null,
     };
   }
@@ -410,6 +418,7 @@ export async function selectAIMove(game, legalPlacements) {
     source: "deterministic",
     externalError: null,
     model: "deterministic-policy",
+    promptVersion: "deterministic-policy",
     responseId: null,
   };
 }

@@ -158,6 +158,14 @@ export async function processAiTurn(gameId, dataOverride) {
     //
     // If all retries failed, apply the deterministic fallback move.
     // Priority: capture > max liberties > seeded random > pass.
+    //
+    // `retryExhaustionFallback` is set to true only when the retry loop has
+    // exhausted all attempts and we resort to the deterministic policy as a
+    // last-resort safety net.  This is distinct from the primary deterministic
+    // provider path (where `source` is also 'deterministic' but no retries
+    // were needed), so we track it with an explicit flag rather than relying
+    // on the `source` field.
+    let retryExhaustionFallback = false;
     if (!success) {
       aiLog("worker.ai_turn.applying_fallback", {
         game_id: gameId,
@@ -175,7 +183,13 @@ export async function processAiTurn(gameId, dataOverride) {
       });
 
       if (fallbackResult.ok) {
-        aiMove = { ...fallbackMove, source: "deterministic", model: "deterministic-policy" };
+        aiMove = {
+          ...fallbackMove,
+          source: "deterministic",
+          model: "deterministic-policy",
+          promptVersion: "deterministic-policy",
+        };
+        retryExhaustionFallback = true;
         success = true;
         aiLog("worker.ai_turn.fallback_applied", {
           game_id: gameId,
@@ -193,14 +207,18 @@ export async function processAiTurn(gameId, dataOverride) {
 
     // ── Log AI turn ─────────────────────────────────────────────────────────
     const latencyMs = Date.now() - startMs;
-    const fallbackUsed = aiMove?.source === "deterministic" || aiMove?.source === "deterministic-policy";
+    // `fallback_used` is true only when the retry loop was exhausted and the
+    // deterministic policy was applied as a last resort.  A primary
+    // deterministic provider move (no retries needed) is NOT considered a
+    // fallback for monitoring purposes.
+    const fallbackUsed = retryExhaustionFallback;
 
     try {
       await d.logAITurn({
         game_id: gameId,
         move_index: game.moves.length,
         model: aiMove?.model ?? null,
-        prompt_version: null,
+        prompt_version: aiMove?.promptVersion ?? null,
         response_id: aiMove?.responseId ?? null,
         retry_count: retryCount,
         fallback_used: fallbackUsed,
