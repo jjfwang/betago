@@ -7,7 +7,7 @@
  *   - Lock expiry and re-acquisition
  *   - processAiTurn: successful AI move application
  *   - processAiTurn: retry on invalid AI move
- *   - processAiTurn: fallback move when all retries fail
+ *   - processAiTurn: error state when all retries fail
  *   - processAiTurn: skips games not in ai_thinking status
  *   - processAiTurn: skips games that are already locked
  *   - getGamesForAiProcessing: returns only unlocked ai_thinking games
@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import knex from "knex";
 import { processAiTurn, setWorkerDataModule } from "../src/worker.js";
 import { setDataModule } from "../src/game/service.js";
+import { setTestProvider } from "../src/ai/client.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = path.join(__dirname, "../db/migrations");
@@ -372,9 +373,16 @@ test.describe("AI Worker – processAiTurn", () => {
     testData = buildDataModule(db);
     setWorkerDataModule(testData);
     setDataModule(testData);
+    setTestProvider(() => ({
+      action: "place",
+      x: 0,
+      y: 0,
+      rationale: "Test AI move",
+    }));
   });
 
   test.afterEach(async () => {
+    setTestProvider(null);
     await db.destroy();
   });
 
@@ -528,11 +536,10 @@ test.describe("AI Worker – processAiTurn", () => {
 
     const logs = await db("ai_turn_logs").where({ game_id: game.id });
     assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
-    // The deterministic provider always sets promptVersion to 'deterministic-policy'.
     assert.strictEqual(
       logs[0].prompt_version,
-      "deterministic-policy",
-      "prompt_version should be 'deterministic-policy' for the deterministic provider",
+      "test-provider",
+      "prompt_version should reflect the active AI provider",
     );
   });
 
@@ -552,11 +559,9 @@ test.describe("AI Worker – processAiTurn", () => {
 
     const logs = await db("ai_turn_logs").where({ game_id: game.id });
     assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
-    // The deterministic provider returns source='deterministic', which is considered
-    // the primary path (not a fallback triggered by retry exhaustion).
     assert.ok(
       logs[0].fallback_used === 0 || logs[0].fallback_used === false,
-      "fallback_used should be false when AI succeeds on first attempt",
+      "fallback_used should be false when no local fallback exists",
     );
   });
 
@@ -646,17 +651,47 @@ test.describe("AI Worker – processAiTurn", () => {
       board_hash: "empty",
     });
 
+    setTestProvider(() => ({
+      action: "pass",
+      rationale: "Test AI pass",
+    }));
+
     // The AI should also pass, ending the game.
-    // With deterministic policy on an empty board, the AI will place a stone,
-    // not pass. So this test verifies the game doesn't break with a prior pass.
     await processAiTurn(game.id, testData);
 
     const updatedGame = await testData.getGameById(game.id);
-    // The game should either be finished (if AI passed) or human_turn (if AI placed).
+    assert.strictEqual(updatedGame.status, "finished");
+  });
+
+  test("marks ai_status as error after repeated invalid AI responses", async () => {
+    const session = await testData.createSession();
+    const game = await testData.createGame({
+      session_id: session.id,
+      board_size: 9,
+      komi: 5.5,
+      status: "ai_thinking",
+      ai_status: "thinking",
+      ai_level: "medium",
+      turn_version: 1,
+    });
+
+    setTestProvider(() => ({ action: "invalid" }));
+
+    await processAiTurn(game.id, testData);
+
+    const updatedGame = await testData.getGameById(game.id);
+    assert.strictEqual(updatedGame.ai_status, "error");
+
+    const moves = await testData.getMovesByGameId(game.id);
+    assert.strictEqual(moves.length, 0, "No AI move should be persisted");
+
+    const logs = await db("ai_turn_logs").where({ game_id: game.id });
+    assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
+    assert.strictEqual(logs[0].status, "error");
+    assert.ok(logs[0].retry_count >= 2, "Worker should exhaust retries before erroring");
     assert.ok(
-      ["human_turn", "finished"].includes(updatedGame.status),
-      `Game status should be human_turn or finished, got: ${updatedGame.status}`,
+      logs[0].fallback_used === 0 || logs[0].fallback_used === false,
+      "fallback_used should remain false",
     );
   });
 });
-

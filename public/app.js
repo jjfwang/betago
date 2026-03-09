@@ -12,6 +12,7 @@ const moveList = document.getElementById("moveList");
 const passBtn = document.getElementById("passBtn");
 const resignBtn = document.getElementById("resignBtn");
 const newGameBtn = document.getElementById("newGameBtn");
+const boardSizeSelect = document.getElementById("boardSizeSelect");
 const aiLevelSelect = document.getElementById("aiLevelSelect");
 
 const state = {
@@ -34,6 +35,11 @@ function normalizeAiLevel(level) {
   return "medium";
 }
 
+function normalizeBoardSize(size) {
+  const value = Number.parseInt(String(size ?? ""), 10);
+  return value === 19 ? 19 : 9;
+}
+
 function actionId() {
   if (globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID();
@@ -43,16 +49,19 @@ function actionId() {
 
 function statusLabel(game) {
   if (game.status === "finished") {
-    if (game.winner === "human") return "Game finished. You won.";
-    if (game.winner === "ai") return "Game finished. AI won.";
+    if (game.winner === "B") return "Game finished. You won.";
+    if (game.winner === "W") return "Game finished. AI won.";
     return "Game finished.";
+  }
+  if (game.ai_status === "error") {
+    return "AI move failed. Check the LLM configuration or server logs.";
   }
   if (game.status === "ai_thinking") return "AI is thinking...";
   return "Your turn.";
 }
 
 function humanMoveEnabled(game) {
-  return game && game.status === "human_turn" && game.turn === "human" && !state.posting;
+  return game && game.status === "human_turn" && game.turn === "B" && !state.posting;
 }
 
 function computeCellSizePx(size) {
@@ -164,12 +173,16 @@ function renderMeta(game) {
   turnVersionText.textContent = String(game.turn_version);
   aiStatusText.textContent = game.ai_status;
   aiLevelText.textContent = normalizeAiLevel(game.ai_level);
-  captureText.textContent = `You ${game.captures.human} / AI ${game.captures.ai}`;
+  captureText.textContent = `You ${game.captures.B} / AI ${game.captures.W}`;
   winnerText.textContent = game.winner ?? "-";
 
   const gameLevel = normalizeAiLevel(game.ai_level);
   if (aiLevelSelect.value !== gameLevel) {
     aiLevelSelect.value = gameLevel;
+  }
+  const gameBoardSize = String(normalizeBoardSize(game.board_size));
+  if (boardSizeSelect.value !== gameBoardSize) {
+    boardSizeSelect.value = gameBoardSize;
   }
 
   passBtn.disabled = !humanMoveEnabled(game);
@@ -235,7 +248,11 @@ async function createGame(forceNew = false) {
   showMessage("");
   const data = await request("/api/games", {
     method: "POST",
-    body: JSON.stringify({ force_new: forceNew, ai_level: normalizeAiLevel(aiLevelSelect.value) }),
+    body: JSON.stringify({
+      force_new: forceNew,
+      board_size: normalizeBoardSize(boardSizeSelect.value),
+      ai_level: normalizeAiLevel(aiLevelSelect.value),
+    }),
   });
   setGame(data.game);
   connectEvents(data.game.id);
@@ -283,6 +300,13 @@ aiLevelSelect.addEventListener("change", () => {
   aiLevelSelect.value = selected;
   if (state.game && state.game.status !== "finished" && state.game.ai_level !== selected) {
     showMessage("Level will apply when you start a new game.");
+  }
+});
+
+boardSizeSelect.addEventListener("change", () => {
+  boardSizeSelect.value = String(normalizeBoardSize(boardSizeSelect.value));
+  if (state.game && state.game.status !== "finished" && state.game.board_size !== normalizeBoardSize(boardSizeSelect.value)) {
+    showMessage("Board size will apply when you start a new game.");
   }
 });
 

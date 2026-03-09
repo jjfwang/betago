@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import knex from "knex";
 import supertest from "supertest";
 import { createApp } from "../src/app.js";
+import { setTestProvider } from "../src/ai/client.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = path.join(__dirname, "../db/migrations");
@@ -204,6 +205,19 @@ test("POST /api/games creates a new game and returns 201", async () => {
   }
 });
 
+test("POST /api/games accepts board_size=19", async () => {
+  const { agent, close } = await buildTestAgent();
+  try {
+    const res = await agent.post("/api/games").send({ board_size: 19 });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.game.board_size, 19, "board_size must be 19");
+    assert.equal(res.body.game.board.length, 19, "board must have 19 rows");
+    assert.equal(res.body.game.board[0].length, 19, "board rows must have 19 columns");
+  } finally {
+    await close();
+  }
+});
+
 test("POST /api/games sets a session cookie", async () => {
   const { agent, close } = await buildTestAgent();
   try {
@@ -230,6 +244,21 @@ test("POST /api/games resumes existing game when force_new is not set", async ()
     const second = await agent.post("/api/games").send({});
     assert.equal(second.status, 200, "second call must return 200 (resumed)");
     assert.equal(second.body.game.id, firstId, "must resume the same game");
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/games creates a new game when requested board_size differs", async () => {
+  const { agent, close } = await buildTestAgent();
+  try {
+    const first = await agent.post("/api/games").send({ board_size: 9 });
+    const second = await agent.post("/api/games").send({ board_size: 19 });
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.notEqual(second.body.game.id, first.body.game.id, "different board sizes should not reuse the same game");
+    assert.equal(second.body.game.board_size, 19);
   } finally {
     await close();
   }
@@ -505,6 +534,8 @@ test("POST /api/games/:id/actions place succeeds with valid coordinates", async 
 test("POST /api/games/:id/actions place returns 400 for occupied cell", async () => {
   const { agent, close } = await buildTestAgent();
   try {
+    setTestProvider(() => ({ action: "pass", rationale: "Test AI pass" }));
+
     const created = await agent.post("/api/games").send({});
     const gameId = created.body.game.id;
 
@@ -538,6 +569,7 @@ test("POST /api/games/:id/actions place returns 400 for occupied cell", async ()
     });
     assert.equal(res.status, 400, "placing on an occupied cell must return 400");
   } finally {
+    setTestProvider(null);
     await close();
   }
 });

@@ -7,6 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "migrate": "knex migrate:latest --knexfile knexfile.cjs",
+    "migrate:status": "knex migrate:status --knexfile knexfile.cjs",
+    "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
     "test": "node --test --test-force-exit",
     "worker": "node src/worker.js"
   },

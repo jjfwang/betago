@@ -184,18 +184,20 @@ test.describe("Integration Tests", () => {
     }
   });
 
-  test("AI uses fallback after repeated failures", async () => {
+  test("AI enters error state after repeated failures", async () => {
     const { agent, db, close } = await buildTestAgent();
     try {
       setTestProvider(() => ({ action: "invalid" }));
       const gameId = (await agent.post("/api/games").send({})).body.game.id;
       await agent.post(`/api/games/${gameId}/actions`).send({ action: "pass", action_id: randomUUID(), expected_turn_version: 0 });
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Increased timeout for fallback
+      await new Promise(resolve => setTimeout(resolve, 1000));
       const finalGame = await agent.get(`/api/games/${gameId}`);
-      assert.equal(finalGame.body.game.status, "human_turn");
+      assert.equal(finalGame.body.game.status, "ai_thinking");
+      assert.equal(finalGame.body.game.ai_status, "error");
       const aiLogs = await db("ai_turn_logs").where({ game_id: gameId });
       assert.ok(aiLogs[0].retry_count > 1);
-      assert.equal(aiLogs[0].fallback_used, 1);
+      assert.equal(aiLogs[0].fallback_used, 0);
+      assert.equal(aiLogs[0].status, "error");
     } finally {
       await close();
     }

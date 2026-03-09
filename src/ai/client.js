@@ -1,26 +1,16 @@
-import { GoEngine, WHITE } from "../game/engine.js";
-import { requestKataGoMove } from "./katago.js";
 import { aiLog, aiLogPrompt } from "./logger.js";
 import { validateAIAction } from "./schema.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
 const PROMPT_VERSION = "1.0";
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
+const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
+const OPENAI_MAX_OUTPUT_TOKENS = 200;
 
 let testProvider = null;
 
 export function setTestProvider(provider) {
   testProvider = provider;
-}
-
-function asInt(v) {
-  if (typeof v === "number" && Number.isInteger(v)) {
-    return v;
-  }
-  if (typeof v === "string" && /^\d+$/.test(v)) {
-    return Number.parseInt(v, 10);
-  }
-  return null;
 }
 
 function normalizeDifficulty(value) {
@@ -31,11 +21,11 @@ function normalizeDifficulty(value) {
 function parseAIAction(raw) {
   const valid = validateAIAction(raw);
   if (!valid) {
-    aiLog("ai_action.invalid_schema", {
+    aiLog("external.response.invalid_schema", {
       errors: validateAIAction.errors,
       raw_input: raw,
     });
-    return null;
+    throw new Error("malformed");
   }
 
   const rationale = typeof raw.rationale === "string" ? raw.rationale.slice(0, 240) : "";
@@ -45,6 +35,105 @@ function parseAIAction(raw) {
   }
 
   return { action: raw.action, rationale };
+}
+
+function getConfiguredApiKey() {
+  return process.env.LLM_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
+}
+
+function getConfiguredModel() {
+  return process.env.LLM_MODEL?.trim() || process.env.OPENAI_MODEL?.trim() || OPENAI_DEFAULT_MODEL;
+}
+
+function normalizeEndpoint(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "api.openai.com" && parsed.pathname === "/v1") {
+      parsed.pathname = "/v1/responses";
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function isResponsesEndpoint(url) {
+  try {
+    return new URL(url).pathname.endsWith("/responses");
+  } catch {
+    return /\/responses(?:\?|$)/.test(url);
+  }
+}
+
+function buildGamePayload(game, legalPlacements) {
+  const legal = legalPlacements.map((move) => ({ x: move.x, y: move.y }));
+
+  return {
+    prompt_version: PROMPT_VERSION,
+    game_id: game.id,
+    board_size: game.boardSize,
+    turn: "ai",
+    ai_color: "W",
+    ai_level: normalizeDifficulty(game.aiLevel),
+    komi: game.komi,
+    turn_version: game.turnVersion,
+    board: game.board,
+    legal_moves: legal,
+    moves: game.moves.slice(-20),
+    output_schema: {
+      action: "place|pass|resign",
+      x: "integer if action=place",
+      y: "integer if action=place",
+      rationale: "optional short string",
+    },
+  };
+}
+
+function buildOpenAIRequest(game, payload) {
+  return {
+    model: getConfiguredModel(),
+    instructions: [
+      "You are the white player in a game of Go.",
+      "Return only valid JSON.",
+      'Use exactly this shape: {"action":"place|pass|resign","x":0,"y":0,"rationale":"optional short string"}.',
+      'If action is "place", x and y are required and must match one of the legal_moves entries exactly.',
+      'If action is "pass" or "resign", omit x and y.',
+      "Coordinates are zero-based.",
+      "Do not include markdown or extra text.",
+    ].join("\n"),
+    input: `Game state JSON:\n${JSON.stringify(payload)}`,
+    text: {
+      format: {
+        type: "json_object",
+      },
+    },
+    max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+    metadata: {
+      game_id: game.id,
+      prompt_version: PROMPT_VERSION,
+      ai_level: normalizeDifficulty(game.aiLevel),
+    },
+  };
+}
+
+function extractOpenAIOutputText(result) {
+  if (typeof result?.output_text === "string" && result.output_text.trim()) {
+    return result.output_text;
+  }
+
+  for (const item of result?.output ?? []) {
+    if (item?.type !== "message" || !Array.isArray(item.content)) {
+      continue;
+    }
+
+    for (const content of item.content) {
+      if (content?.type === "output_text" && typeof content.text === "string" && content.text.trim()) {
+        return content.text;
+      }
+    }
+  }
+
+  return "";
 }
 
 async function postJson(url, body, headers = {}) {
@@ -61,45 +150,28 @@ async function postJson(url, body, headers = {}) {
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+
     if (!resp.ok) {
+      const errorBody = await resp.text().catch(() => "");
+      aiLog("external.response.http_error", {
+        url,
+        status: resp.status,
+        body: errorBody,
+      });
       throw new Error(`llm_http_${resp.status}`);
     }
+
     return await resp.json();
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function requestExternalMove(game, legalPlacements) {
-  const url = process.env.LLM_API_URL;
-  if (!url) {
-    return null;
-  }
-
-  const legal = legalPlacements.map((m) => ({ x: m.x, y: m.y }));
-  const payload = {
-    prompt_version: PROMPT_VERSION,
-    game_id: game.id,
-    board_size: game.boardSize,
-    turn: "ai",
-    ai_color: WHITE,
-    ai_level: normalizeDifficulty(game.aiLevel),
-    komi: game.komi,
-    turn_version: game.turnVersion,
-    board: game.board,
-    legal_moves: legal,
-    moves: game.moves.slice(-20),
-    output_schema: {
-      action: "place|pass|resign",
-      x: "integer if action=place",
-      y: "integer if action=place",
-      rationale: "optional short string",
-    },
-  };
-
+async function requestGenericExternalMove(url, game, payload) {
   const headers = {};
-  if (process.env.LLM_API_KEY) {
-    headers.Authorization = `Bearer ${process.env.LLM_API_KEY}`;
+  const apiKey = getConfiguredApiKey();
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
   }
 
   aiLog("external.request.start", {
@@ -107,275 +179,116 @@ async function requestExternalMove(game, legalPlacements) {
     turn_version: game.turnVersion,
     ai_level: normalizeDifficulty(game.aiLevel),
     endpoint: url,
-    legal_moves_count: legal.length,
+    legal_moves_count: payload.legal_moves.length,
   });
   aiLogPrompt("external.request.payload", payload);
 
+  const result = await postJson(url, payload, headers);
+  const parsed = parseAIAction(result?.action ? result : result?.data ?? result?.output);
+
+  aiLog("external.response.ok", {
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    model: result?.model ?? "external-api",
+    response_id: result?.response_id ?? result?.id ?? null,
+    action: parsed.action,
+    x: parsed.x ?? null,
+    y: parsed.y ?? null,
+  });
+
+  return {
+    ...parsed,
+    source: "external",
+    responseId: result?.response_id ?? result?.id ?? null,
+    model: result?.model ?? "external-api",
+    promptVersion: PROMPT_VERSION,
+    externalError: null,
+  };
+}
+
+async function requestOpenAIResponsesMove(url, game, payload) {
+  const headers = {};
+  const apiKey = getConfiguredApiKey();
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  const requestBody = buildOpenAIRequest(game, payload);
+  aiLog("external.request.start", {
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    ai_level: normalizeDifficulty(game.aiLevel),
+    endpoint: url,
+    legal_moves_count: payload.legal_moves.length,
+    model: requestBody.model,
+  });
+  aiLogPrompt("external.request.payload", requestBody);
+
+  const result = await postJson(url, requestBody, headers);
+  const outputText = extractOpenAIOutputText(result);
+  if (!outputText) {
+    aiLog("external.response.invalid_openai_output", {
+      game_id: game.id,
+      turn_version: game.turnVersion,
+      response_id: result?.id ?? null,
+      status: result?.status ?? null,
+      error: result?.error ?? null,
+    });
+    throw new Error("malformed");
+  }
+
+  let raw;
   try {
-    const result = await postJson(url, payload, headers);
-    const parsed = parseAIAction(result?.action ? result : result?.data ?? result?.output);
-    if (!parsed) {
-      aiLog("external.response.malformed", {
-        game_id: game.id,
-        turn_version: game.turnVersion,
-      });
-      return { source: "external", valid: false, reason: "malformed" };
-    }
-
-    aiLog("external.response.ok", {
+    raw = JSON.parse(outputText);
+  } catch {
+    aiLog("external.response.invalid_json", {
       game_id: game.id,
       turn_version: game.turnVersion,
-      model: result?.model ?? "external-api",
-      response_id: result?.response_id ?? result?.id ?? null,
-      action: parsed.action,
-      x: parsed.x ?? null,
-      y: parsed.y ?? null,
+      response_id: result?.id ?? null,
+      output_text: outputText,
     });
-
-    return {
-      source: "external",
-      valid: true,
-      move: parsed,
-      responseId: result?.response_id ?? result?.id ?? null,
-      model: result?.model ?? "external-api",
-      promptVersion: PROMPT_VERSION,
-    };
-  } catch (error) {
-    aiLog("external.response.error", {
-      game_id: game.id,
-      turn_version: game.turnVersion,
-      error: error?.name === "AbortError" ? "timeout" : error.message,
-    });
-    return {
-      source: "external",
-      valid: false,
-      reason: error?.name === "AbortError" ? "timeout" : error.message,
-    };
-  }
-}
-
-function resolveProvider() {
-  if (testProvider) return "test";
-  const explicit = process.env.AI_PROVIDER?.trim().toLowerCase();
-  if (explicit) {
-    return explicit;
-  }
-  if (process.env.LLM_API_URL) {
-    return "external";
-  }
-  return "deterministic";
-}
-
-function seededHash(text) {
-  let h = 2166136261;
-  const value = String(text);
-  for (let i = 0; i < value.length; i += 1) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function seededPick(items, seed) {
-  if (items.length === 0) {
-    return null;
-  }
-  const idx = seededHash(seed) % items.length;
-  return items[idx];
-}
-
-function centerDistance(size, x, y) {
-  const c = (size - 1) / 2;
-  return Math.abs(x - c) + Math.abs(y - c);
-}
-
-function scoreMoveForLevel(level, moveMeta, size) {
-  const dist = centerDistance(size, moveMeta.x, moveMeta.y);
-
-  if (level === "hard") {
-    return moveMeta.captures * 100 + moveMeta.liberties * 10 - dist;
-  }
-  if (level === "medium") {
-    return moveMeta.captures * 30 + moveMeta.liberties * 5 - dist * 0.8;
+    throw new Error("malformed");
   }
 
-  // entry level: prefer weaker/safer-looking moves and avoid tactical captures.
-  return -moveMeta.captures * 20 - moveMeta.liberties * 2 + dist;
-}
+  const parsed = parseAIAction(raw);
+  aiLog("external.response.ok", {
+    game_id: game.id,
+    turn_version: game.turnVersion,
+    model: result?.model ?? requestBody.model,
+    response_id: result?.id ?? null,
+    action: parsed.action,
+    x: parsed.x ?? null,
+    y: parsed.y ?? null,
+  });
 
-function pickMoveByLevel(game, legalPlacements, level) {
-  if (legalPlacements.length === 0) {
-    return null;
-  }
-
-  const engine = new GoEngine(game.boardSize);
-  engine.board = game.board;
-  engine.history = game.positionHistory;
-
-  const scored = [];
-  for (const move of legalPlacements) {
-    const result = engine.tryPlaceStone(move.x, move.y, WHITE);
-    if (!result.ok) {
-      continue;
-    }
-
-    scored.push({
-      x: move.x,
-      y: move.y,
-      captures: move.captures,
-      liberties: result.engine._groupAndLiberties(move.x, move.y).liberties.size,
-    });
-  }
-
-  if (scored.length === 0) {
-    return legalPlacements[0];
-  }
-
-  const sorted = scored
-    .map((m) => ({ ...m, score: scoreMoveForLevel(level, m, game.boardSize) }))
-    .sort((a, b) => b.score - a.score);
-
-  let pool = sorted;
-  if (level === "medium") {
-    pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length * 0.35)));
-  } else if (level === "entry") {
-    pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length * 0.45)));
-  }
-
-  const picked = seededPick(pool, `${game.id}:${game.turnVersion}:${game.moves.length}:${level}`) ?? pool[0];
   return {
-    x: picked.x,
-    y: picked.y,
-    captures: picked.captures,
-    liberties: picked.liberties,
+    ...parsed,
+    source: "external",
+    responseId: result?.id ?? null,
+    model: result?.model ?? requestBody.model,
+    promptVersion: PROMPT_VERSION,
+    externalError: null,
   };
 }
 
-export function deterministicPolicyMove(game, legalPlacements) {
-  const level = normalizeDifficulty(game.aiLevel);
-
-  if (legalPlacements.length === 0) {
-    return {
-      action: "pass",
-      rationale: "No legal placements available, so I pass.",
-    };
+async function requestExternalMove(game, legalPlacements) {
+  const configuredUrl = process.env.LLM_API_URL?.trim();
+  if (!configuredUrl) {
+    throw new Error("llm_api_url_missing");
   }
 
-  const chosen = pickMoveByLevel(game, legalPlacements, level);
-  if (!chosen) {
-    return {
-      action: "pass",
-      rationale: "No legal placements available, so I pass.",
-    };
+  const url = normalizeEndpoint(configuredUrl);
+  const payload = buildGamePayload(game, legalPlacements);
+
+  if (isResponsesEndpoint(url)) {
+    return requestOpenAIResponsesMove(url, game, payload);
   }
 
-  if (level === "entry") {
-    return {
-      action: "place",
-      x: chosen.x,
-      y: chosen.y,
-      rationale: "Entry-level move selected.",
-    };
-  }
-
-  if (level === "medium") {
-    return {
-      action: "place",
-      x: chosen.x,
-      y: chosen.y,
-      rationale: chosen.captures > 0 ? "Medium move with tactical capture." : "Medium balanced move selected.",
-    };
-  }
-
-  return {
-    action: "place",
-    x: chosen.x,
-    y: chosen.y,
-    rationale: chosen.captures > 0 ? "Hard move: capturing sequence selected." : "Hard move: strongest local shape selected.",
-  };
-}
-
-export function retryFallbackPolicyMove(game, legalPlacements) {
-  if (legalPlacements.length === 0) {
-    return {
-      action: "pass",
-      rationale: "No legal placements available; auto-passing as fallback.",
-    };
-  }
-
-  const engine = new GoEngine(game.boardSize);
-  engine.board = game.board;
-  engine.history = game.positionHistory;
-
-  const scored = [];
-  for (const move of legalPlacements) {
-    const result = engine.tryPlaceStone(move.x, move.y, WHITE);
-    if (result.ok) {
-      scored.push({
-        ...move,
-        liberties: result.engine._groupAndLiberties(move.x, move.y).liberties.size,
-      });
-    }
-  }
-
-  if (scored.length === 0) {
-    return {
-      action: "pass",
-      rationale: "No legal placements available; auto-passing as fallback.",
-    };
-  }
-
-  const seed = `${game.id}:${game.turnVersion}:${game.moves.length}:fallback`;
-
-  const captures = scored.filter((m) => m.captures > 0);
-  if (captures.length > 0) {
-    const maxCaptures = Math.max(...captures.map((m) => m.captures));
-    const bestCaptures = captures.filter((m) => m.captures === maxCaptures);
-    const chosen = seededPick(bestCaptures, seed) ?? bestCaptures[0];
-    return {
-      action: "place",
-      x: chosen.x,
-      y: chosen.y,
-      rationale: `Fallback: capture move with ${chosen.captures} capture${chosen.captures > 1 ? "s" : ""}.`,
-    };
-  }
-
-  const maxLiberties = Math.max(...scored.map((m) => m.liberties));
-  const bestLiberty = scored.filter((m) => m.liberties === maxLiberties);
-  if (bestLiberty.length === 1) {
-    const chosen = bestLiberty[0];
-    return {
-      action: "place",
-      x: chosen.x,
-      y: chosen.y,
-      rationale: `Fallback: move maximizing liberties (${chosen.liberties}).`,
-    };
-  }
-
-  const libertyTieChosen = seededPick(bestLiberty, seed) ?? bestLiberty[0];
-  return {
-    action: "place",
-    x: libertyTieChosen.x,
-    y: libertyTieChosen.y,
-    rationale: `Fallback: move maximizing liberties (${libertyTieChosen.liberties}), tie broken by seed.`,
-  };
-}
-
-function shouldUseKataGoForLevel(game) {
-  const level = normalizeDifficulty(game.aiLevel);
-  if (level === "hard") {
-    return true;
-  }
-  const key = `${game.id}:${game.turnVersion}:${game.moves.length}:katago:${level}`;
-  const roll = seededHash(key) % 100;
-  if (level === "entry") {
-    return roll < 20;
-  }
-  return roll < 50;
+  return requestGenericExternalMove(url, game, payload);
 }
 
 export async function selectAIMove(game, legalPlacements) {
-  const provider = resolveProvider();
+  const provider = testProvider ? "test" : "external";
   aiLog("provider.selected", {
     game_id: game.id,
     turn_version: game.turnVersion,
@@ -384,113 +297,25 @@ export async function selectAIMove(game, legalPlacements) {
     legal_moves_count: legalPlacements.length,
   });
 
-  if (provider === "test") {
+  if (testProvider) {
     const move = await testProvider(game, legalPlacements);
-    return { ...move, source: "test-provider" };
-  }
-
-  if (provider === "katago") {
-    if (shouldUseKataGoForLevel(game)) {
-      const kata = await requestKataGoMove(game);
-      if (kata?.valid) {
-        aiLog("provider.result", {
-          provider: "katago",
-          game_id: game.id,
-          turn_version: game.turnVersion,
-          model: kata.model,
-          action: kata.move?.action,
-        });
-        return {
-          ...kata.move,
-          source: "katago",
-          responseId: kata.responseId,
-          model: kata.model,
-          promptVersion: "katago-gtp",
-        };
-      }
-      const fallback = deterministicPolicyMove(game, legalPlacements);
-      aiLog("provider.fallback", {
-        provider: "katago",
-        game_id: game.id,
-        turn_version: game.turnVersion,
-        reason: kata?.reason ?? "katago_failed",
-      });
-      return {
-        ...fallback,
-        source: "katago",
-        externalError: kata?.reason ?? "katago_failed",
-        model: "deterministic-policy",
-        promptVersion: "deterministic-policy",
-        responseId: null,
-      };
-    }
-    const fallback = deterministicPolicyMove(game, legalPlacements);
-    aiLog("provider.result", {
-      provider: "deterministic",
-      game_id: game.id,
-      turn_version: game.turnVersion,
-      action: fallback.action,
-      ai_level: normalizeDifficulty(game.aiLevel),
-    });
     return {
-      ...fallback,
-      source: "deterministic",
+      ...move,
+      source: "test-provider",
+      responseId: null,
+      model: "test-provider",
+      promptVersion: "test-provider",
       externalError: null,
-      model: "deterministic-policy",
-      promptVersion: "deterministic-policy",
-      responseId: null,
     };
   }
 
-  if (provider === "external") {
-    const external = await requestExternalMove(game, legalPlacements);
-    if (external?.valid) {
-      aiLog("provider.result", {
-        provider: "external",
-        game_id: game.id,
-        turn_version: game.turnVersion,
-        model: external.model,
-        action: external.move?.action,
-      });
-      return {
-        ...external.move,
-        source: external.source,
-        responseId: external.responseId,
-        model: external.model,
-        promptVersion: PROMPT_VERSION,
-      };
-    }
-    const fallback = deterministicPolicyMove(game, legalPlacements);
-    aiLog("provider.fallback", {
-      provider: "external",
-      game_id: game.id,
-      turn_version: game.turnVersion,
-      reason: external?.reason ?? "external_failed",
-    });
-    return {
-      ...fallback,
-      source: external?.source ?? "external",
-      externalError: external?.reason ?? "external_failed",
-      model: "deterministic-policy",
-      promptVersion: "deterministic-policy",
-      responseId: null,
-    };
-  }
-
-  const deterministic = deterministicPolicyMove(game, legalPlacements);
+  const move = await requestExternalMove(game, legalPlacements);
   aiLog("provider.result", {
-    provider: "deterministic",
+    provider: "external",
     game_id: game.id,
     turn_version: game.turnVersion,
-    action: deterministic.action,
-    ai_level: normalizeDifficulty(game.aiLevel),
+    model: move.model,
+    action: move.action,
   });
-  return {
-    ...deterministic,
-    source: "deterministic",
-    externalError: null,
-    model: "deterministic-policy",
-    promptVersion: "deterministic-policy",
-    responseId: null,
-  };
+  return move;
 }

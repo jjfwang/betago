@@ -1,3 +1,4 @@
+-- Active: 1757233600836@@127.0.0.1@5432@orchestrator
 # Go AI Game: Product and Development Plan
 
 ## 1. Product Plan

@@ -1,6 +1,5 @@
 const AI_LOG_ENABLED = (process.env.AI_LOG_ENABLED ?? "false").trim().toLowerCase() === "true";
 const AI_LOG_PROMPT = (process.env.AI_LOG_PROMPT ?? "false").trim().toLowerCase() === "true";
-const AI_LOG_VERBOSE = (process.env.AI_LOG_VERBOSE ?? "false").trim().toLowerCase() === "true";
 
 function clipString(value, max = 1000) {
   if (typeof value !== "string") {
@@ -66,13 +65,4 @@ export function aiLogPrompt(event, data = {}) {
   const payload = sanitize(data);
   // eslint-disable-next-line no-console
   console.log(`[ai-log-prompt] ${event} ${JSON.stringify(payload)}`);
-}
-
-export function aiLogVerbose(event, data = {}) {
-  if (!AI_LOG_ENABLED || !AI_LOG_VERBOSE) {
-    return;
-  }
-  const payload = sanitize(data);
-  // eslint-disable-next-line no-console
-  console.log(`[ai-log-verbose] ${event} ${JSON.stringify(payload)}`);
 }

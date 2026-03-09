@@ -1,14 +1,13 @@
 # BetaGo MVP
 
-A playable Human vs AI Go (`18x18`) web app with:
+A playable Human vs AI Go (`9x9` and `19x19`) web app with:
 - Chinese area scoring
 - Positional superko
 - Suicide prevention
 - WGo.js-based board UI (local asset in `public/vendor`)
 - AI difficulty levels: `entry`, `medium`, `hard`
 - Async AI turns with idempotent action API
-- Pluggable AI providers: deterministic, external LLM API, or KataGo
-- Deterministic fallback policy when provider output fails
+- External LLM API integration for AI move selection
 
 ## Run
 
@@ -49,36 +48,25 @@ If you need strict CORS allowlisting, set `CORS_ALLOWED_ORIGINS` to a comma-sepa
 - Board texture asset is local at `public/vendor/wood1.jpg`.
 - No CDN is required for board rendering.
 
-## AI Providers
+## LLM Setup
 
-### 1) Deterministic (default when no LLM URL)
+Set OpenAI Responses API credentials:
 
 ```bash
-export AI_PROVIDER=deterministic
+export LLM_API_URL="https://api.openai.com/v1/responses"
+export LLM_API_KEY="your-openai-api-key"
+export LLM_MODEL="gpt-4.1-mini"
 npm run dev
 ```
 
-### 2) External LLM API
-
-Set an external model endpoint that accepts JSON and returns an action:
-
-```bash
-export AI_PROVIDER=external
-export LLM_API_URL="https://your-llm-endpoint"
-export LLM_API_KEY="your-token" # optional
-npm run dev
-```
-
-Expected response shape from your endpoint:
+This app sends the Go game state to the model and expects JSON like:
 
 ```json
 {
   "action": "place",
   "x": 4,
   "y": 4,
-  "rationale": "Short explanation",
-  "model": "your-model",
-  "response_id": "abc123"
+  "rationale": "Short explanation"
 }
 ```
 
@@ -88,43 +76,23 @@ Also accepted:
 { "action": "pass" }
 ```
 
-### 3) KataGo (no LLM required)
+If you still want to use a custom non-OpenAI endpoint, the legacy JSON contract is still supported: point `LLM_API_URL` at your endpoint and return the same action object directly.
 
-Set provider to `katago` and configure a KataGo GTP command.
-
-Option A: one command string
-
-```bash
-export AI_PROVIDER=katago
-export KATAGO_CMD='katago gtp -model /path/model.bin.gz -config /path/gtp.cfg'
-npm run dev
-```
-
-Option B: binary + args
-
-```bash
-export AI_PROVIDER=katago
-export KATAGO_BIN=katago
-export KATAGO_MODEL=/path/model.bin.gz
-export KATAGO_CONFIG=/path/gtp.cfg
-npm run dev
-```
-
-If KataGo fails or times out, the app uses deterministic fallback for that move.
+If the LLM endpoint times out, returns invalid JSON, or proposes an illegal
+move repeatedly, the game stays in `ai_thinking` and `ai_status` is set to
+`error`. No local fallback move is generated.
 
 ## AI Runtime Logging
 
-You can inspect which provider/model is used per move and payload details:
+You can inspect request/model details per move:
 
 ```bash
 AI_LOG_ENABLED=true
 AI_LOG_PROMPT=true
-AI_LOG_VERBOSE=false
 ```
 
-- `AI_LOG_ENABLED=true`: logs provider selection and move results (`deterministic` / `external` / `katago`, model, action).
+- `AI_LOG_ENABLED=true`: logs provider selection and move results (`external`, model, action).
 - `AI_LOG_PROMPT=true`: logs external provider request payload (prompt-like context sent to your model endpoint).
-- `AI_LOG_VERBOSE=true`: logs low-level KataGo GTP commands (very noisy).
 
 ## API Summary
 

@@ -15,14 +15,12 @@
  *    `ai_thinking` status and processes them. This is useful for deployments
  *    where the HTTP server and AI worker are separate processes.
  *
- * ## Retry and Fallback Policy
+ * ## Retry Policy
  *
  * The worker attempts to select a valid AI move up to `MAX_AI_RETRIES + 1`
  * times. On each attempt, the selected move is validated by the server-side
- * rule engine. If all attempts fail, the `retryFallbackPolicyMove` fallback
- * from `src/ai/client.js` is used as a last resort. If even the fallback
- * fails (which should not happen for a valid game state), the game's
- * `ai_status` is set to `error`.
+ * rule engine. If all attempts fail, the game's `ai_status` is set to
+ * `error`; no local fallback move is generated.
  *
  * ## Distributed Locking
  *
@@ -32,11 +30,12 @@
  * `AI_TURN_TIMEOUT_MS` milliseconds to handle worker crashes.
  */
 
+import "./env.js";
 import * as defaultData from "./data.js";
 import { getGame, applyMove, getGameForApi, setDataModule } from "./game/service.js";
 import { ssePublish } from "./sse.js";
 import { listLegalPlacements } from "./game/rules.js";
-import { selectAIMove, retryFallbackPolicyMove } from "./ai/client.js";
+import { selectAIMove } from "./ai/client.js";
 import { aiLog } from "./ai/logger.js";
 
 /**
@@ -68,7 +67,7 @@ const AI_TURN_TIMEOUT_MS = Number.parseInt(
   10,
 );
 
-/** Maximum number of retries for an invalid AI move before applying the fallback. */
+/** Maximum number of retries for an invalid AI move before surfacing an error. */
 const MAX_AI_RETRIES = Number.parseInt(process.env.MAX_AI_RETRIES ?? "2", 10);
 
 /**
@@ -80,7 +79,7 @@ const MAX_AI_RETRIES = Number.parseInt(process.env.MAX_AI_RETRIES ?? "2", 10);
  * 3. Calls `selectAIMove` to get a move from the configured AI provider.
  * 4. Validates the move against the rule engine via `applyMove`.
  * 5. Retries up to `MAX_AI_RETRIES` times on invalid moves.
- * 6. Falls back to `retryFallbackPolicyMove` if all retries fail.
+ * 6. Marks the game as errored if all retries fail.
  * 7. Logs the AI turn result and publishes an SSE event.
  *
  * @param {string} gameId The ID of the game to process.
@@ -125,6 +124,7 @@ export async function processAiTurn(gameId, dataOverride) {
         await d.updateGame(gameId, { ai_status: i === 0 ? "thinking" : "retrying" });
 
         const moveAttempt = await selectAIMove(game, legalPlacements);
+        aiMove = moveAttempt;
         const validationResult = await applyMove(game, {
           player: "ai",
           action: moveAttempt.action,
@@ -154,64 +154,16 @@ export async function processAiTurn(gameId, dataOverride) {
       }
     }
 
-    // ── Fallback policy ─────────────────────────────────────────────────────
-    //
-    // If all retries failed, apply the deterministic fallback move.
-    // Priority: capture > max liberties > seeded random > pass.
-    //
-    // `retryExhaustionFallback` is set to true only when the retry loop has
-    // exhausted all attempts and we resort to the deterministic policy as a
-    // last-resort safety net.  This is distinct from the primary deterministic
-    // provider path (where `source` is also 'deterministic' but no retries
-    // were needed), so we track it with an explicit flag rather than relying
-    // on the `source` field.
-    let retryExhaustionFallback = false;
     if (!success) {
-      aiLog("worker.ai_turn.applying_fallback", {
+      aiLog("worker.ai_turn.failed", {
         game_id: gameId,
         final_error: lastError,
         retry_count: retryCount,
       });
-
-      const fallbackMove = retryFallbackPolicyMove(game, legalPlacements);
-      const fallbackResult = await applyMove(game, {
-        player: "ai",
-        action: fallbackMove.action,
-        x: fallbackMove.x,
-        y: fallbackMove.y,
-        rationale: fallbackMove.rationale ?? null,
-      });
-
-      if (fallbackResult.ok) {
-        aiMove = {
-          ...fallbackMove,
-          source: "deterministic",
-          model: "deterministic-policy",
-          promptVersion: "deterministic-policy",
-        };
-        retryExhaustionFallback = true;
-        success = true;
-        aiLog("worker.ai_turn.fallback_applied", {
-          game_id: gameId,
-          action: fallbackMove.action,
-          x: fallbackMove.x ?? null,
-          y: fallbackMove.y ?? null,
-        });
-      } else {
-        aiLog("worker.ai_turn.fallback_failed", {
-          game_id: gameId,
-          reason: fallbackResult.reason,
-        });
-      }
     }
 
     // ── Log AI turn ─────────────────────────────────────────────────────────
     const latencyMs = Date.now() - startMs;
-    // `fallback_used` is true only when the retry loop was exhausted and the
-    // deterministic policy was applied as a last resort.  A primary
-    // deterministic provider move (no retries needed) is NOT considered a
-    // fallback for monitoring purposes.
-    const fallbackUsed = retryExhaustionFallback;
 
     try {
       await d.logAITurn({
@@ -221,7 +173,7 @@ export async function processAiTurn(gameId, dataOverride) {
         prompt_version: aiMove?.promptVersion ?? null,
         response_id: aiMove?.responseId ?? null,
         retry_count: retryCount,
-        fallback_used: fallbackUsed,
+        fallback_used: false,
         latency_ms: latencyMs,
         external_error: aiMove?.externalError ?? lastError ?? null,
         status: success ? "ok" : "error",

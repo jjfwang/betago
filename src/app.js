@@ -40,6 +40,7 @@
  * returns HTTP 409 with `error:"not_your_turn"` or `error:"game_finished"`
  * respectively, preventing duplicate or out-of-order submissions.
  */
+import "./env.js";
 import express from "express";
 import cookieParser from "cookie-parser";
 import {
@@ -55,6 +56,11 @@ import { sseSubscribe, sseUnsubscribe } from "./sse.js";
 import { processAiTurn } from "./worker.js";
 
 const SESSION_COOKIE = "bg_session_id";
+const SUPPORTED_BOARD_SIZES = new Set([9, 19]);
+
+function normalizeBoardSize(value) {
+  return SUPPORTED_BOARD_SIZES.has(value) ? value : 9;
+}
 
 // ---------------------------------------------------------------------------
 // Idempotency helpers
@@ -136,18 +142,22 @@ export function createApp({ data = defaultData } = {}) {
     try {
       const forceNew = req.body?.force_new === true;
       const aiLevel = normalizeAiLevel(req.body?.ai_level);
+      const boardSize = normalizeBoardSize(req.body?.board_size);
 
       let gameRecord = null;
       let isNew = false;
 
       if (!forceNew) {
         gameRecord = await data.getActiveGameBySessionId(req.session.id);
+        if (gameRecord && gameRecord.board_size !== boardSize) {
+          gameRecord = null;
+        }
       }
 
       if (!gameRecord) {
         gameRecord = await createGame({
           sessionId: req.session.id,
-          boardSize: 9,
+          boardSize,
           komi: 5.5,
           aiLevel,
         });

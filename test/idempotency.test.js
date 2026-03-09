@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import knex from "knex";
 import supertest from "supertest";
 import { createApp } from "../src/app.js";
+import { setTestProvider } from "../src/ai/client.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = path.join(__dirname, "../db/migrations");
@@ -198,6 +199,19 @@ async function waitForHumanTurn(agent, gameId, maxAttempts = 30, delayMs = 100) 
   throw new Error(`Game ${gameId} did not return to human_turn within timeout`);
 }
 
+test.beforeEach(() => {
+  setTestProvider(() => ({
+    action: "place",
+    x: 0,
+    y: 0,
+    rationale: "Test AI move",
+  }));
+});
+
+test.afterEach(() => {
+  setTestProvider(null);
+});
+
 // ---------------------------------------------------------------------------
 // Idempotency – basic duplicate detection
 // ---------------------------------------------------------------------------
@@ -324,6 +338,13 @@ test("idempotency: idempotent response includes current game state", async () =>
 test("idempotency: different action_ids are treated as independent actions", async () => {
   const { agent, close } = await buildTestAgent();
   try {
+    setTestProvider(() => ({
+      action: "place",
+      x: 0,
+      y: 0,
+      rationale: "Test AI move",
+    }));
+
     const created = await agent.post("/api/games").send({});
     const gameId = created.body.game.id;
 
@@ -353,6 +374,7 @@ test("idempotency: different action_ids are treated as independent actions", asy
       "turn_version must be incremented for a new action",
     );
   } finally {
+    setTestProvider(null);
     await close();
   }
 });
@@ -674,6 +696,8 @@ test("action_requests: successful action is recorded with status completed", asy
 test("action_requests: failed action (illegal move) is recorded with status failed", async () => {
   const { agent, db, close } = await buildTestAgent();
   try {
+    setTestProvider(() => ({ action: "pass", rationale: "Test AI pass" }));
+
     const created = await agent.post("/api/games").send({});
     const gameId = created.body.game.id;
 
@@ -706,6 +730,7 @@ test("action_requests: failed action (illegal move) is recorded with status fail
     assert.equal(row.status, "failed", "action_request status must be failed for illegal move");
     assert.ok(row.error_code, "error_code must be set for failed action");
   } finally {
+    setTestProvider(null);
     await close();
   }
 });
