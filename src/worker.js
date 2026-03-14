@@ -19,8 +19,9 @@
  *
  * The worker attempts to select a valid AI move up to `MAX_AI_RETRIES + 1`
  * times. On each attempt, the selected move is validated by the server-side
- * rule engine. If all attempts fail, the game's `ai_status` is set to
- * `error`; no local fallback move is generated.
+ * rule engine. If all attempts fail, the worker applies a deterministic local
+ * fallback move. The game's `ai_status` is only set to `error` if both the
+ * provider and the fallback fail.
  *
  * ## Distributed Locking
  *
@@ -37,6 +38,7 @@ import { ssePublish } from "./sse.js";
 import { listLegalPlacements } from "./game/rules.js";
 import { selectAIMove } from "./ai/client.js";
 import { aiLog } from "./ai/logger.js";
+import { processChessAiTurn } from "./chess/worker.js";
 
 /**
  * The active data module.  Defaults to the real data module but can be
@@ -70,6 +72,43 @@ const AI_TURN_TIMEOUT_MS = Number.parseInt(
 /** Maximum number of retries for an invalid AI move before surfacing an error. */
 const MAX_AI_RETRIES = Number.parseInt(process.env.MAX_AI_RETRIES ?? "2", 10);
 
+function selectFallbackGoMove(game, legalPlacements, errorCode) {
+  if (!Array.isArray(legalPlacements) || legalPlacements.length === 0) {
+    return {
+      action: "pass",
+      rationale: `Fallback move after AI failure (${errorCode ?? "unknown_error"}): passing because no legal placements remain.`,
+    };
+  }
+
+  const center = (game.boardSize - 1) / 2;
+  const rankedMoves = [...legalPlacements].sort((a, b) => {
+    const captureDelta = (b.captures ?? 0) - (a.captures ?? 0);
+    if (captureDelta !== 0) {
+      return captureDelta;
+    }
+
+    const distanceA = Math.abs(a.x - center) + Math.abs(a.y - center);
+    const distanceB = Math.abs(b.x - center) + Math.abs(b.y - center);
+    if (distanceA !== distanceB) {
+      return distanceA - distanceB;
+    }
+
+    if (a.y !== b.y) {
+      return a.y - b.y;
+    }
+
+    return a.x - b.x;
+  });
+
+  const move = rankedMoves[0];
+  return {
+    action: "place",
+    x: move.x,
+    y: move.y,
+    rationale: `Fallback move after AI failure (${errorCode ?? "unknown_error"}): choosing a safe legal move.`,
+  };
+}
+
 /**
  * Processes a single AI turn for a given game.
  *
@@ -79,8 +118,9 @@ const MAX_AI_RETRIES = Number.parseInt(process.env.MAX_AI_RETRIES ?? "2", 10);
  * 3. Calls `selectAIMove` to get a move from the configured AI provider.
  * 4. Validates the move against the rule engine via `applyMove`.
  * 5. Retries up to `MAX_AI_RETRIES` times on invalid moves.
- * 6. Marks the game as errored if all retries fail.
- * 7. Logs the AI turn result and publishes an SSE event.
+ * 6. Applies a deterministic fallback move if all retries fail.
+ * 7. Marks the game as errored only if both retries and fallback fail.
+ * 8. Logs the AI turn result and publishes an SSE event.
  *
  * @param {string} gameId The ID of the game to process.
  * @param {object} [dataOverride] Optional data module override (for testing).
@@ -116,6 +156,7 @@ export async function processAiTurn(gameId, dataOverride) {
     let lastError = null;
     let success = false;
     let retryCount = 0;
+    let fallbackUsed = false;
 
     // ── Retry loop ──────────────────────────────────────────────────────────
     for (let i = 0; i <= MAX_AI_RETRIES; i++) {
@@ -155,11 +196,46 @@ export async function processAiTurn(gameId, dataOverride) {
     }
 
     if (!success) {
-      aiLog("worker.ai_turn.failed", {
+      aiLog("worker.ai_turn.provider_failed", {
         game_id: gameId,
         final_error: lastError,
         retry_count: retryCount,
       });
+
+      const fallbackMove = selectFallbackGoMove(game, legalPlacements, lastError);
+      const fallbackResult = await applyMove(game, {
+        player: "ai",
+        action: fallbackMove.action,
+        x: fallbackMove.x,
+        y: fallbackMove.y,
+        rationale: fallbackMove.rationale,
+      });
+
+      if (fallbackResult.ok) {
+        aiMove = {
+          ...fallbackMove,
+          source: "local-fallback",
+          responseId: null,
+          model: "local-fallback",
+          promptVersion: "local-fallback",
+          externalError: lastError,
+        };
+        success = true;
+        fallbackUsed = true;
+        aiLog("worker.ai_turn.fallback_applied", {
+          game_id: gameId,
+          action: fallbackMove.action,
+          x: fallbackMove.x ?? null,
+          y: fallbackMove.y ?? null,
+          previous_error: lastError,
+        });
+      } else {
+        lastError = fallbackResult.reason;
+        aiLog("worker.ai_turn.fallback_failed", {
+          game_id: gameId,
+          error: lastError,
+        });
+      }
     }
 
     // ── Log AI turn ─────────────────────────────────────────────────────────
@@ -173,7 +249,7 @@ export async function processAiTurn(gameId, dataOverride) {
         prompt_version: aiMove?.promptVersion ?? null,
         response_id: aiMove?.responseId ?? null,
         retry_count: retryCount,
-        fallback_used: false,
+        fallback_used: fallbackUsed,
         latency_ms: latencyMs,
         external_error: aiMove?.externalError ?? lastError ?? null,
         status: success ? "ok" : "error",
@@ -217,10 +293,19 @@ async function runWorkerLoop() {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      const games = await data.getGamesForAiProcessing();
-      if (games.length > 0) {
-        aiLog("worker.poll.found_games", { count: games.length });
-        await Promise.all(games.map((game) => processAiTurn(game.id)));
+      const [goGames, chessGames] = await Promise.all([
+        data.getGamesForAiProcessing(),
+        data.getChessGamesForAiProcessing?.() ?? [],
+      ]);
+
+      if (goGames.length > 0) {
+        aiLog("worker.poll.found_games", { count: goGames.length, variant: "go" });
+        await Promise.all(goGames.map((game) => processAiTurn(game.id)));
+      }
+
+      if (chessGames.length > 0) {
+        aiLog("worker.poll.found_games", { count: chessGames.length, variant: "chess" });
+        await Promise.all(chessGames.map((game) => processChessAiTurn(game.id)));
       }
     } catch (error) {
       console.error("[worker] Error in main loop:", error);

@@ -1,0 +1,8 @@
+.env
+.git
+.gitignore
+frontend
+node_modules
+npm-debug.log
+db.sqlite3
+coverage

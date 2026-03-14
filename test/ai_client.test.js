@@ -35,7 +35,9 @@ const originalEnv = {
   LLM_API_URL: process.env.LLM_API_URL,
   LLM_API_KEY: process.env.LLM_API_KEY,
   LLM_MODEL: process.env.LLM_MODEL,
+  OPENAI_API_URL: process.env.OPENAI_API_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
 };
 
@@ -145,4 +147,53 @@ test("selectAIMove still supports legacy JSON endpoints", async () => {
     promptVersion: "1.0",
     externalError: null,
   });
+});
+
+test("selectAIMove normalizes common OpenAI endpoints to the Responses API", async () => {
+  process.env.LLM_API_URL = "https://api.openai.com/v1/chat/completions";
+  process.env.LLM_API_KEY = "test-key";
+
+  global.fetch = async (url) => {
+    assert.equal(url, "https://api.openai.com/v1/responses");
+
+    return new Response(
+      JSON.stringify({
+        id: "resp_normalized",
+        output_text: JSON.stringify({ action: "pass" }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  const move = await selectAIMove(buildGame(), buildLegalPlacements());
+  assert.equal(move.action, "pass");
+  assert.equal(move.responseId, "resp_normalized");
+});
+
+test("selectAIMove falls back to OPENAI_API_URL when LLM_API_URL is unset", async () => {
+  delete process.env.LLM_API_URL;
+  process.env.OPENAI_API_URL = "https://api.openai.com/v1";
+  process.env.OPENAI_API_KEY = "test-key";
+
+  global.fetch = async (url) => {
+    assert.equal(url, "https://api.openai.com/v1/responses");
+
+    return new Response(
+      JSON.stringify({
+        id: "resp_fallback",
+        output_text: JSON.stringify({ action: "pass" }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  const move = await selectAIMove(buildGame(), buildLegalPlacements());
+  assert.equal(move.action, "pass");
+  assert.equal(move.responseId, "resp_fallback");
 });

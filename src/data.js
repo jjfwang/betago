@@ -41,8 +41,24 @@ export async function createGame(data) {
   return game;
 }
 
+export async function createChessGame(data) {
+  const id = randomUUID();
+  const game = {
+    id,
+    ...data,
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+  await db("chess_games").insert(game);
+  return game;
+}
+
 export async function getGameById(gameId) {
   return await db("games").where({ id: gameId }).first();
+}
+
+export async function getChessGameById(gameId) {
+  return await db("chess_games").where({ id: gameId }).first();
 }
 
 /**
@@ -52,6 +68,14 @@ export async function getGameById(gameId) {
  */
 export async function getActiveGameBySessionId(sessionId) {
   return await db("games")
+    .where({ session_id: sessionId })
+    .whereNot({ status: "finished" })
+    .orderBy("created_at", "desc")
+    .first();
+}
+
+export async function getActiveChessGameBySessionId(sessionId) {
+  return await db("chess_games")
     .where({ session_id: sessionId })
     .whereNot({ status: "finished" })
     .orderBy("created_at", "desc")
@@ -70,8 +94,19 @@ export async function getLatestGameBySessionId(sessionId) {
     .first();
 }
 
+export async function getLatestChessGameBySessionId(sessionId) {
+  return await db("chess_games")
+    .where({ session_id: sessionId })
+    .orderBy("created_at", "desc")
+    .first();
+}
+
 export async function getMovesByGameId(gameId) {
   return await db("moves").where({ game_id: gameId }).orderBy("move_index");
+}
+
+export async function getChessMovesByGameId(gameId) {
+  return await db("chess_moves").where({ game_id: gameId }).orderBy("move_index");
 }
 
 export async function createMove(data) {
@@ -82,6 +117,17 @@ export async function createMove(data) {
     created_at: new Date(),
   };
   await db("moves").insert(move);
+  return move;
+}
+
+export async function createChessMove(data) {
+  const id = randomUUID();
+  const move = {
+    id,
+    ...data,
+    created_at: new Date(),
+  };
+  await db("chess_moves").insert(move);
   return move;
 }
 
@@ -96,6 +142,17 @@ export async function logAITurn(data) {
   return log;
 }
 
+export async function logChessAITurn(data) {
+  const id = randomUUID();
+  const log = {
+    id,
+    ...data,
+    created_at: new Date(),
+  };
+  await db("chess_ai_turn_logs").insert(log);
+  return log;
+}
+
 /**
  * Look up a previously recorded action request by its client-supplied action_id.
  * @param {string} actionId
@@ -103,6 +160,10 @@ export async function logAITurn(data) {
  */
 export async function findActionRequestByActionId(actionId) {
   return await db("action_requests").where({ action_id: actionId }).first();
+}
+
+export async function findChessActionRequestByActionId(actionId) {
+  return await db("chess_action_requests").where({ action_id: actionId }).first();
 }
 
 export async function recordActionRequest(data) {
@@ -116,12 +177,34 @@ export async function recordActionRequest(data) {
   return request;
 }
 
+export async function recordChessActionRequest(data) {
+  const id = randomUUID();
+  const request = {
+    id,
+    ...data,
+    created_at: new Date(),
+  };
+  await db("chess_action_requests").insert(request);
+  return request;
+}
+
 export async function updateActionRequest(actionId, data) {
   await db("action_requests").where({ action_id: actionId }).update(data);
 }
 
+export async function updateChessActionRequest(actionId, data) {
+  await db("chess_action_requests").where({ action_id: actionId }).update(data);
+}
+
 export async function updateGame(gameId, data) {
   await db("games").where({ id: gameId }).update({
+    ...data,
+    updated_at: new Date(),
+  });
+}
+
+export async function updateChessGame(gameId, data) {
+  await db("chess_games").where({ id: gameId }).update({
     ...data,
     updated_at: new Date(),
   });
@@ -138,6 +221,18 @@ export async function getGamesForAiProcessing() {
   const timeout = new Date(now.getTime() - 30000); // 30 seconds ago
 
   return await db("games")
+    .where({ status: "ai_thinking" })
+    .andWhere(function () {
+      this.whereNull("ai_turn_locked_at").orWhere("ai_turn_locked_at", "<", timeout);
+    })
+    .select("id");
+}
+
+export async function getChessGamesForAiProcessing() {
+  const now = new Date();
+  const timeout = new Date(now.getTime() - 30000);
+
+  return await db("chess_games")
     .where({ status: "ai_thinking" })
     .andWhere(function () {
       this.whereNull("ai_turn_locked_at").orWhere("ai_turn_locked_at", "<", timeout);
@@ -168,6 +263,23 @@ export async function acquireAiTurnLock(gameId, timeoutMs) {
   return result > 0;
 }
 
+export async function acquireChessAiTurnLock(gameId, timeoutMs) {
+  const now = new Date();
+  const timeout = new Date(now.getTime() - timeoutMs);
+
+  const result = await db("chess_games")
+    .where({ id: gameId, status: "ai_thinking" })
+    .andWhere(function () {
+      this.whereNull("ai_turn_locked_at").orWhere("ai_turn_locked_at", "<", timeout);
+    })
+    .update({
+      ai_turn_locked_at: now,
+      ai_turn_worker_id: WORKER_ID,
+    });
+
+  return result > 0;
+}
+
 /**
  * Releases the AI turn lock on a game.
  * @param {string} gameId The ID of the game to release the lock on.
@@ -175,6 +287,13 @@ export async function acquireAiTurnLock(gameId, timeoutMs) {
  */
 export async function releaseAiTurnLock(gameId) {
   await db("games").where({ id: gameId, ai_turn_worker_id: WORKER_ID }).update({
+    ai_turn_locked_at: null,
+    ai_turn_worker_id: null,
+  });
+}
+
+export async function releaseChessAiTurnLock(gameId) {
+  await db("chess_games").where({ id: gameId, ai_turn_worker_id: WORKER_ID }).update({
     ai_turn_locked_at: null,
     ai_turn_worker_id: null,
   });

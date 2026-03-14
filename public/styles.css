@@ -61,6 +61,23 @@ body {
   gap: 0.5rem;
 }
 
+.game-nav {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.82rem;
+}
+
+.game-nav a {
+  color: rgba(23, 22, 20, 0.7);
+  text-decoration: none;
+}
+
+.game-nav a.active {
+  color: var(--ink);
+  font-weight: 700;
+}
+
 .level-label {
   font-size: 0.86rem;
   opacity: 0.75;
@@ -161,6 +178,14 @@ p {
 
 .move-list li {
   margin-bottom: 0.35rem;
+}
+
+.move-rationale {
+  margin-top: 0.16rem;
+  margin-left: 1.4rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.74;
 }
 
 @media (max-width: 920px) {

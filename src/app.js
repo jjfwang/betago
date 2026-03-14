@@ -51,15 +51,108 @@ import {
   normalizeAiLevel,
   setDataModule,
 } from "./game/service.js";
+import {
+  applyChessMove,
+  createChessGame,
+  getChessGame,
+  getChessGameForApi,
+  normalizeChessAiLevel,
+  setChessDataModule,
+} from "./chess/service.js";
 import * as defaultData from "./data.js";
 import { sseSubscribe, sseUnsubscribe } from "./sse.js";
 import { processAiTurn } from "./worker.js";
+import { processChessAiTurn } from "./chess/worker.js";
 
 const SESSION_COOKIE = "bg_session_id";
 const SUPPORTED_BOARD_SIZES = new Set([9, 19]);
 
 function normalizeBoardSize(value) {
   return SUPPORTED_BOARD_SIZES.has(value) ? value : 9;
+}
+
+function parseBooleanEnv(value) {
+  return typeof value === "string" && value.trim().toLowerCase() === "true";
+}
+
+function parseAllowedOrigins(value) {
+  if (typeof value !== "string") {
+    return new Set();
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  );
+}
+
+function isPrivateLanHostname(hostname) {
+  const normalized = hostname.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized === "localhost" || normalized === "::1" || normalized === "127.0.0.1") {
+    return true;
+  }
+
+  if (normalized.endsWith(".local")) {
+    return true;
+  }
+
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)) {
+    return true;
+  }
+
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(normalized)) {
+    return true;
+  }
+
+  const classBMatch = /^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(normalized);
+  if (classBMatch) {
+    const secondOctet = Number.parseInt(classBMatch[1], 10);
+    return secondOctet >= 16 && secondOctet <= 31;
+  }
+
+  return normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+}
+
+function isAllowedCorsOrigin(origin, exactOrigins, allowPrivateLan) {
+  if (exactOrigins.has(origin)) {
+    return true;
+  }
+
+  if (!allowPrivateLan) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(origin);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return false;
+    }
+    return isPrivateLanHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function applyCorsHeaders(req, res, origin) {
+  res.append("Vary", "Origin");
+  res.append("Vary", "Access-Control-Request-Headers");
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+
+  const requestedHeaders = req.headers["access-control-request-headers"];
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    typeof requestedHeaders === "string" && requestedHeaders.trim()
+      ? requestedHeaders
+      : "Content-Type",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -95,19 +188,65 @@ function isUniqueConstraintError(err) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ data?: object }} [deps={}]  Optional dependency overrides.
+ * @param {{ data?: object, scheduleAiTurn?: Function, scheduleChessAiTurn?: Function }} [deps={}]
+ *   Optional dependency overrides.
  *   - `data`: Data module to use instead of the default `./data.js`.
  *             Useful in tests to inject an in-memory database.
+ *   - `scheduleAiTurn`: Background scheduler used after a human move hands
+ *     control to the AI. Tests can override this to avoid stray async work.
+ *   - `scheduleChessAiTurn`: Chess equivalent of `scheduleAiTurn`.
  * @returns {import('express').Application}
  */
-export function createApp({ data = defaultData } = {}) {
+export function createApp({
+  data = defaultData,
+  scheduleAiTurn = (gameId, dataModule) => {
+    setImmediate(() => {
+      void processAiTurn(gameId, dataModule);
+    });
+  },
+  scheduleChessAiTurn = (gameId, dataModule) => {
+    setImmediate(() => {
+      void processChessAiTurn(gameId, dataModule);
+    });
+  },
+} = {}) {
   // Inject the data module into the game service so that service functions
   // (createGame, getGame, applyMove, etc.) use the same database as the
   // route handlers.  This is especially important in tests where an
   // in-memory SQLite database is injected.
   setDataModule(data);
+  setChessDataModule(data);
 
   const app = express();
+  const corsEnabled = parseBooleanEnv(process.env.ENABLE_CORS);
+  const corsAllowedOrigins = parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS);
+  const corsAllowPrivateLan = parseBooleanEnv(process.env.CORS_ALLOW_PRIVATE_LAN);
+
+  app.use((req, res, next) => {
+    if (!corsEnabled) {
+      return next();
+    }
+
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin.trim() : "";
+    if (!origin) {
+      return next();
+    }
+
+    if (!isAllowedCorsOrigin(origin, corsAllowedOrigins, corsAllowPrivateLan)) {
+      if (req.method === "OPTIONS") {
+        return res.sendStatus(403);
+      }
+      return next();
+    }
+
+    applyCorsHeaders(req, res, origin);
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+
+    return next();
+  });
 
   app.use(express.json({ limit: "100kb" }));
   app.use(cookieParser());
@@ -134,6 +273,10 @@ export function createApp({ data = defaultData } = {}) {
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, ts: new Date().toISOString() });
+  });
+
+  app.get("/api/chess/health", (_req, res) => {
+    res.json({ ok: true, ts: new Date().toISOString(), variant: "chess" });
   });
 
   // ── POST /api/games ───────────────────────────────────────────────────────
@@ -171,6 +314,35 @@ export function createApp({ data = defaultData } = {}) {
     }
   });
 
+  // ── POST /api/chess/games ─────────────────────────────────────────────────
+
+  app.post("/api/chess/games", async (req, res, next) => {
+    try {
+      const forceNew = req.body?.force_new === true;
+      const aiLevel = normalizeChessAiLevel(req.body?.ai_level);
+
+      let gameRecord = null;
+      let isNew = false;
+
+      if (!forceNew) {
+        gameRecord = await data.getActiveChessGameBySessionId(req.session.id);
+      }
+
+      if (!gameRecord) {
+        gameRecord = await createChessGame({
+          sessionId: req.session.id,
+          aiLevel,
+        });
+        isNew = true;
+      }
+
+      const gamePayload = await getChessGameForApi(gameRecord.id);
+      res.status(isNew ? 201 : 200).json({ game: gamePayload });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ── GET /api/games/:id ────────────────────────────────────────────────────
 
   app.get("/api/games/:id", async (req, res, next) => {
@@ -180,6 +352,21 @@ export function createApp({ data = defaultData } = {}) {
         return res.status(404).json({ error: "not_found" });
       }
       const gamePayload = await getGameForApi(req.params.id);
+      res.json({ game: gamePayload });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── GET /api/chess/games/:id ──────────────────────────────────────────────
+
+  app.get("/api/chess/games/:id", async (req, res, next) => {
+    try {
+      const gameRecord = await data.getChessGameById(req.params.id);
+      if (!gameRecord || gameRecord.session_id !== req.session.id) {
+        return res.status(404).json({ error: "not_found" });
+      }
+      const gamePayload = await getChessGameForApi(req.params.id);
       res.json({ game: gamePayload });
     } catch (err) {
       next(err);
@@ -337,7 +524,126 @@ export function createApp({ data = defaultData } = {}) {
       // Trigger the AI turn asynchronously after the response is sent.
       // Pass the injected data module so tests can use their in-memory DB.
       if (gamePayload.status === "ai_thinking") {
-        setImmediate(() => processAiTurn(req.params.id, data));
+        scheduleAiTurn(req.params.id, data);
+      }
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── POST /api/chess/games/:id/actions ─────────────────────────────────────
+
+  app.post("/api/chess/games/:id/actions", async (req, res, next) => {
+    try {
+      const gameRecord = await data.getChessGameById(req.params.id);
+      if (!gameRecord || gameRecord.session_id !== req.session.id) {
+        return res.status(404).json({ error: "not_found" });
+      }
+
+      const actionId =
+        typeof req.body?.action_id === "string" ? req.body.action_id.trim() : null;
+      if (!actionId) {
+        return res.status(400).json({ error: "missing_action_id" });
+      }
+
+      const action =
+        typeof req.body?.action === "string" ? req.body.action.toLowerCase() : null;
+      if (!["move", "resign"].includes(action)) {
+        return res.status(400).json({ error: "invalid_action" });
+      }
+
+      const expectedTurnVersion = req.body?.expected_turn_version;
+      if (!Number.isInteger(expectedTurnVersion)) {
+        return res.status(400).json({ error: "missing_expected_turn_version" });
+      }
+
+      const from =
+        typeof req.body?.from === "string" ? req.body.from.trim().toLowerCase() : null;
+      const to =
+        typeof req.body?.to === "string" ? req.body.to.trim().toLowerCase() : null;
+      const promotion =
+        typeof req.body?.promotion === "string"
+          ? req.body.promotion.trim().toLowerCase()
+          : null;
+      if (action === "move" && (!/^[a-h][1-8]$/.test(from ?? "") || !/^[a-h][1-8]$/.test(to ?? ""))) {
+        return res.status(400).json({ error: "invalid_coordinate" });
+      }
+      if (promotion && !["q", "r", "b", "n"].includes(promotion)) {
+        return res.status(400).json({ error: "invalid_promotion" });
+      }
+
+      const existing = await data.findChessActionRequestByActionId(actionId);
+      if (existing) {
+        if (existing.game_id !== req.params.id) {
+          return res.status(409).json({ error: "action_id_conflict" });
+        }
+        const gamePayload = await getChessGameForApi(req.params.id);
+        return res.status(200).json({ game: gamePayload, idempotent: true });
+      }
+
+      if (gameRecord.turn_version !== expectedTurnVersion) {
+        return res.status(409).json({
+          error: "stale_turn_version",
+          current_turn_version: gameRecord.turn_version,
+        });
+      }
+
+      if (gameRecord.status === "finished") {
+        return res.status(409).json({ error: "game_finished" });
+      }
+      if (gameRecord.status !== "human_turn") {
+        return res.status(409).json({ error: "not_your_turn" });
+      }
+
+      try {
+        await data.recordChessActionRequest({
+          game_id: req.params.id,
+          action_id: actionId,
+          expected_turn_version: expectedTurnVersion,
+          status: "processing",
+          error_code: null,
+        });
+      } catch (insertErr) {
+        if (isUniqueConstraintError(insertErr)) {
+          const gamePayload = await getChessGameForApi(req.params.id);
+          return res.status(200).json({ game: gamePayload, idempotent: true });
+        }
+        throw insertErr;
+      }
+
+      await data.updateChessGame(req.params.id, { pending_action: actionId });
+
+      const game = await getChessGame(req.params.id);
+      if (!game) {
+        return res.status(404).json({ error: "not_found" });
+      }
+
+      const result =
+        action === "resign"
+          ? await applyChessMove(game, { player: "human", action: "resign" })
+          : await applyChessMove(game, {
+              player: "human",
+              action: "move",
+              from,
+              to,
+              promotion,
+            });
+
+      if (!result.ok) {
+        await data.updateChessActionRequest(actionId, {
+          status: "failed",
+          error_code: result.reason,
+        });
+        await data.updateChessGame(req.params.id, { pending_action: null });
+        return res.status(400).json({ error: result.reason });
+      }
+
+      await data.updateChessActionRequest(actionId, { status: "completed" });
+      const gamePayload = await getChessGameForApi(req.params.id);
+      res.status(200).json({ game: gamePayload, idempotent: false });
+
+      if (gamePayload.status === "ai_thinking") {
+        scheduleChessAiTurn(req.params.id, data);
       }
     } catch (err) {
       next(err);
@@ -381,9 +687,49 @@ export function createApp({ data = defaultData } = {}) {
     }
   });
 
+  // ── GET /api/chess/games/:id/events (SSE) ─────────────────────────────────
+
+  app.get("/api/chess/games/:id/events", async (req, res, next) => {
+    try {
+      const gameRecord = await data.getChessGameById(req.params.id);
+      if (!gameRecord || gameRecord.session_id !== req.session.id) {
+        return res.status(404).json({ error: "not_found" });
+      }
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+
+      const gamePayload = await getChessGameForApi(req.params.id);
+      res.write(`event: game\ndata: ${JSON.stringify(gamePayload)}\n\n`);
+
+      sseSubscribe(req.params.id, res);
+
+      const pingInterval = setInterval(() => {
+        try {
+          res.write(": ping\n\n");
+        } catch {
+          clearInterval(pingInterval);
+        }
+      }, 25_000);
+
+      req.on("close", () => {
+        clearInterval(pingInterval);
+        sseUnsubscribe(req.params.id, res);
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ── Static files & SPA fallback ───────────────────────────────────────────
 
   app.use(express.static("public"));
+  app.get("/chess", (_req, res) => {
+    res.sendFile("chess.html", { root: "public" });
+  });
   app.get("*", (_req, res) => {
     res.sendFile("index.html", { root: "public" });
   });

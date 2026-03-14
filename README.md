@@ -18,6 +18,32 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+Chess is also available at `http://localhost:3000/chess`.
+
+## Docker
+
+Build and run the backend container:
+
+```bash
+docker build -t betago .
+docker run --rm -p 3000:3000 \
+  -e LLM_API_KEY=your-openai-api-key \
+  -e LLM_API_URL=https://api.openai.com/v1/responses \
+  -v "$(pwd)/data:/app/data" \
+  betago
+```
+
+Or with Compose:
+
+```bash
+docker compose up --build
+```
+
+- The container stores SQLite at `/app/data/db.sqlite3` by default.
+- Compose uses a named Docker volume for `/app/data` so SQLite is writable without host permission fixes.
+- Migrations run automatically on container start.
+- Override `DATABASE_PATH` if you want the DB somewhere else inside the container.
+
 ## LAN Access (192.168.x.x)
 
 To access from other devices on your local network, set:
@@ -40,7 +66,7 @@ Example:
 http://192.168.1.23:3000
 ```
 
-If you need strict CORS allowlisting, set `CORS_ALLOWED_ORIGINS` to a comma-separated list of exact origins.
+If you need strict CORS allowlisting, set `CORS_ALLOWED_ORIGINS` to a comma-separated list of exact origins such as `http://localhost:3001`.
 
 ## Local Frontend Assets
 
@@ -58,6 +84,8 @@ export LLM_API_KEY="your-openai-api-key"
 export LLM_MODEL="gpt-4.1-mini"
 npm run dev
 ```
+
+The backend also accepts `OPENAI_API_URL` or `OPENAI_BASE_URL`. If you point it at `https://api.openai.com`, `https://api.openai.com/v1`, or the legacy chat completions path, it is normalized to `https://api.openai.com/v1/responses` automatically.
 
 This app sends the Go game state to the model and expects JSON like:
 
@@ -79,8 +107,9 @@ Also accepted:
 If you still want to use a custom non-OpenAI endpoint, the legacy JSON contract is still supported: point `LLM_API_URL` at your endpoint and return the same action object directly.
 
 If the LLM endpoint times out, returns invalid JSON, or proposes an illegal
-move repeatedly, the game stays in `ai_thinking` and `ai_status` is set to
-`error`. No local fallback move is generated.
+move repeatedly, the worker retries the provider response and then applies a
+deterministic local fallback move so the game can continue. Only if both the
+provider and fallback fail does `ai_status` end up as `error`.
 
 ## AI Runtime Logging
 
@@ -104,6 +133,10 @@ AI_LOG_PROMPT=true
   - Requires `action_id` and `expected_turn_version`
 - `GET /api/games/:id/events` SSE stream for realtime updates
   - Move history in payload is capped (`MAX_MOVES_IN_PAYLOAD`) to keep SSE events bounded.
+- `POST /api/chess/games` create or get the active chess game
+- `GET /api/chess/games/:id` fetch current chess state
+- `POST /api/chess/games/:id/actions` submit `move|resign`
+- `GET /api/chess/games/:id/events` SSE stream for realtime chess updates
 
 ## Test
 

@@ -663,7 +663,7 @@ test.describe("AI Worker – processAiTurn", () => {
     assert.strictEqual(updatedGame.status, "finished");
   });
 
-  test("marks ai_status as error after repeated invalid AI responses", async () => {
+  test("falls back to a legal local move after repeated invalid AI responses", async () => {
     const session = await testData.createSession();
     const game = await testData.createGame({
       session_id: session.id,
@@ -680,18 +680,21 @@ test.describe("AI Worker – processAiTurn", () => {
     await processAiTurn(game.id, testData);
 
     const updatedGame = await testData.getGameById(game.id);
-    assert.strictEqual(updatedGame.ai_status, "error");
+    assert.strictEqual(updatedGame.ai_status, "done");
+    assert.strictEqual(updatedGame.status, "human_turn");
 
     const moves = await testData.getMovesByGameId(game.id);
-    assert.strictEqual(moves.length, 0, "No AI move should be persisted");
+    assert.strictEqual(moves.length, 1, "Fallback AI move should be persisted");
+    assert.strictEqual(moves[0].player, "ai");
+    assert.match(moves[0].rationale, /Fallback move after AI failure/);
 
     const logs = await db("ai_turn_logs").where({ game_id: game.id });
     assert.strictEqual(logs.length, 1, "One AI turn log should be recorded");
-    assert.strictEqual(logs[0].status, "error");
-    assert.ok(logs[0].retry_count >= 2, "Worker should exhaust retries before erroring");
+    assert.strictEqual(logs[0].status, "ok");
+    assert.ok(logs[0].retry_count >= 2, "Worker should exhaust retries before falling back");
     assert.ok(
-      logs[0].fallback_used === 0 || logs[0].fallback_used === false,
-      "fallback_used should remain false",
+      logs[0].fallback_used === 1 || logs[0].fallback_used === true,
+      "fallback_used should be true when local fallback is applied",
     );
   });
 });

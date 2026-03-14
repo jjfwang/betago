@@ -1,0 +1,23 @@
+services:
+  betago:
+    build:
+      context: .
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_PATH: /app/data/db.sqlite3
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1/responses}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+      ENABLE_CORS: ${ENABLE_CORS:-false}
+      CORS_ALLOW_PRIVATE_LAN: ${CORS_ALLOW_PRIVATE_LAN:-false}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+    volumes:
+      - betago_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  betago_data:

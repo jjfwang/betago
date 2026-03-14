@@ -41,6 +41,15 @@ function getConfiguredApiKey() {
   return process.env.LLM_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
 }
 
+function getConfiguredApiUrl() {
+  return (
+    process.env.LLM_API_URL?.trim() ||
+    process.env.OPENAI_API_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim() ||
+    ""
+  );
+}
+
 function getConfiguredModel() {
   return process.env.LLM_MODEL?.trim() || process.env.OPENAI_MODEL?.trim() || OPENAI_DEFAULT_MODEL;
 }
@@ -48,8 +57,16 @@ function getConfiguredModel() {
 function normalizeEndpoint(url) {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname === "api.openai.com" && parsed.pathname === "/v1") {
-      parsed.pathname = "/v1/responses";
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "") || "/";
+    if (parsed.hostname === "api.openai.com") {
+      if (
+        normalizedPath === "/" ||
+        normalizedPath === "/v1" ||
+        normalizedPath === "/v1/chat/completions" ||
+        normalizedPath === "/v1/completions"
+      ) {
+        parsed.pathname = "/v1/responses";
+      }
     }
     return parsed.toString();
   } catch {
@@ -272,7 +289,7 @@ async function requestOpenAIResponsesMove(url, game, payload) {
 }
 
 async function requestExternalMove(game, legalPlacements) {
-  const configuredUrl = process.env.LLM_API_URL?.trim();
+  const configuredUrl = getConfiguredApiUrl();
   if (!configuredUrl) {
     throw new Error("llm_api_url_missing");
   }

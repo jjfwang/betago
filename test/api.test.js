@@ -23,6 +23,7 @@ import knex from "knex";
 import supertest from "supertest";
 import { createApp } from "../src/app.js";
 import { setTestProvider } from "../src/ai/client.js";
+import { processAiTurn } from "../src/worker.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = path.join(__dirname, "../db/migrations");
@@ -151,10 +152,12 @@ function buildDataModule(db) {
  * Call `close()` in the `finally` block of each test to properly tear down
  * the internal HTTP server and SQLite connection.
  */
-async function buildTestAgent() {
+async function buildTestAgent({
+  scheduleAiTurn = () => {},
+} = {}) {
   const db = await buildTestDb();
   const data = buildDataModule(db);
-  const app = createApp({ data });
+  const app = createApp({ data, scheduleAiTurn });
   const agent = supertest.agent(app);
   async function close() {
     // Close the internal server created by supertest.agent().
@@ -164,6 +167,20 @@ async function buildTestAgent() {
     await db.destroy();
   }
   return { agent, db, data, close };
+}
+
+function captureEnv(keys) {
+  return Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+}
+
+function restoreEnv(snapshot) {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete process.env[key];
+      continue;
+    }
+    process.env[key] = value;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +195,59 @@ test("GET /api/health returns 200 with ok:true", async () => {
     assert.equal(res.body.ok, true);
     assert.ok(typeof res.body.ts === "string", "ts must be a string");
   } finally {
+    await close();
+  }
+});
+
+test("OPTIONS preflight returns CORS headers for an allowlisted origin", async () => {
+  const envSnapshot = captureEnv([
+    "ENABLE_CORS",
+    "CORS_ALLOWED_ORIGINS",
+    "CORS_ALLOW_PRIVATE_LAN",
+  ]);
+  process.env.ENABLE_CORS = "true";
+  process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3001";
+  process.env.CORS_ALLOW_PRIVATE_LAN = "false";
+
+  const { agent, close } = await buildTestAgent();
+  try {
+    const res = await agent
+      .options("/api/games")
+      .set("Origin", "http://localhost:3001")
+      .set("Access-Control-Request-Method", "POST")
+      .set("Access-Control-Request-Headers", "Content-Type");
+
+    assert.equal(res.status, 204);
+    assert.equal(res.headers["access-control-allow-origin"], "http://localhost:3001");
+    assert.equal(res.headers["access-control-allow-credentials"], "true");
+    assert.match(res.headers.vary ?? "", /Origin/);
+  } finally {
+    restoreEnv(envSnapshot);
+    await close();
+  }
+});
+
+test("OPTIONS preflight allows private LAN origins when enabled", async () => {
+  const envSnapshot = captureEnv([
+    "ENABLE_CORS",
+    "CORS_ALLOWED_ORIGINS",
+    "CORS_ALLOW_PRIVATE_LAN",
+  ]);
+  process.env.ENABLE_CORS = "true";
+  process.env.CORS_ALLOWED_ORIGINS = "";
+  process.env.CORS_ALLOW_PRIVATE_LAN = "true";
+
+  const { agent, close } = await buildTestAgent();
+  try {
+    const res = await agent
+      .options("/api/games")
+      .set("Origin", "http://192.168.1.50:3001")
+      .set("Access-Control-Request-Method", "POST");
+
+    assert.equal(res.status, 204);
+    assert.equal(res.headers["access-control-allow-origin"], "http://192.168.1.50:3001");
+  } finally {
+    restoreEnv(envSnapshot);
     await close();
   }
 });
@@ -532,7 +602,11 @@ test("POST /api/games/:id/actions place succeeds with valid coordinates", async 
 });
 
 test("POST /api/games/:id/actions place returns 400 for occupied cell", async () => {
-  const { agent, close } = await buildTestAgent();
+  const { agent, close } = await buildTestAgent({
+    scheduleAiTurn: (gameId, data) => {
+      void processAiTurn(gameId, data);
+    },
+  });
   try {
     setTestProvider(() => ({ action: "pass", rationale: "Test AI pass" }));
 

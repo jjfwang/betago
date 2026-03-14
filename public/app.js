@@ -158,11 +158,20 @@ function renderMoveHistory(game) {
   moveList.replaceChildren();
   for (const move of game.moves) {
     const li = document.createElement("li");
+    const summary = document.createElement("div");
     const label = `${move.move_index + 1}. ${move.player} ${move.action}${move.coordinate ? ` ${move.coordinate}` : ""}`;
     let extra = "";
     if (move.captures) extra += ` (captures ${move.captures})`;
-    if (move.rationale) extra += ` - ${move.rationale}`;
-    li.textContent = label + extra;
+    summary.textContent = label + extra;
+    li.appendChild(summary);
+
+    if (move.player === "ai" && move.rationale) {
+      const rationale = document.createElement("div");
+      rationale.className = "move-rationale";
+      rationale.textContent = `Why: ${move.rationale}`;
+      li.appendChild(rationale);
+    }
+
     moveList.appendChild(li);
   }
 }

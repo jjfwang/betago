@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import knex from "knex";
 import supertest from "supertest";
 import { createApp } from "../src/app.js";
-import { setWorkerDataModule } from "../src/worker.js";
+import { processAiTurn, setWorkerDataModule } from "../src/worker.js";
 import { setDataModule } from "../src/game/service.js";
 import { setTestProvider } from "../src/ai/client.js";
 
@@ -124,10 +124,12 @@ function buildDataModule(db) {
   };
 }
 
-async function buildTestAgent() {
+async function buildTestAgent({
+  scheduleAiTurn = () => {},
+} = {}) {
   const db = await buildTestDb();
   const data = buildDataModule(db);
-  const app = createApp({ data });
+  const app = createApp({ data, scheduleAiTurn });
   const agent = supertest.agent(app);
   setWorkerDataModule(data);
   setDataModule(data);
@@ -142,7 +144,11 @@ test.afterEach(() => setTestProvider(null));
 
 test.describe("Integration Tests", () => {
   test("a complete game can be played from start to finish", async () => {
-    const { agent, db, close } = await buildTestAgent();
+    const { agent, db, close } = await buildTestAgent({
+      scheduleAiTurn: (gameId, data) => {
+        void processAiTurn(gameId, data);
+      },
+    });
     try {
       setTestProvider((game, legal) => {
         if (game.moves.length === 1) return { action: "place", x: 5, y: 5, rationale: "AI mock move" };
@@ -164,7 +170,11 @@ test.describe("Integration Tests", () => {
   });
 
   test("AI retries on invalid move and succeeds", async () => {
-    const { agent, db, close } = await buildTestAgent();
+    const { agent, db, close } = await buildTestAgent({
+      scheduleAiTurn: (gameId, data) => {
+        void processAiTurn(gameId, data);
+      },
+    });
     try {
       let attempt = 0;
       setTestProvider(() => {
@@ -184,20 +194,25 @@ test.describe("Integration Tests", () => {
     }
   });
 
-  test("AI enters error state after repeated failures", async () => {
-    const { agent, db, close } = await buildTestAgent();
+  test("AI falls back to a local move after repeated failures", async () => {
+    const { agent, db, close } = await buildTestAgent({
+      scheduleAiTurn: (gameId, data) => {
+        void processAiTurn(gameId, data);
+      },
+    });
     try {
       setTestProvider(() => ({ action: "invalid" }));
       const gameId = (await agent.post("/api/games").send({})).body.game.id;
       await agent.post(`/api/games/${gameId}/actions`).send({ action: "pass", action_id: randomUUID(), expected_turn_version: 0 });
       await new Promise(resolve => setTimeout(resolve, 1000));
       const finalGame = await agent.get(`/api/games/${gameId}`);
-      assert.equal(finalGame.body.game.status, "ai_thinking");
-      assert.equal(finalGame.body.game.ai_status, "error");
+      assert.equal(finalGame.body.game.status, "human_turn");
+      assert.equal(finalGame.body.game.ai_status, "done");
       const aiLogs = await db("ai_turn_logs").where({ game_id: gameId });
       assert.ok(aiLogs[0].retry_count > 1);
-      assert.equal(aiLogs[0].fallback_used, 0);
-      assert.equal(aiLogs[0].status, "error");
+      assert.equal(aiLogs[0].fallback_used, 1);
+      assert.equal(aiLogs[0].status, "ok");
+      assert.match(finalGame.body.game.last_ai_rationale, /Fallback move after AI failure/);
     } finally {
       await close();
     }
@@ -217,7 +232,11 @@ test.describe("Integration Tests", () => {
   });
 
   test("rejects action with a stale turn version", async () => {
-    const { agent, close } = await buildTestAgent();
+    const { agent, close } = await buildTestAgent({
+      scheduleAiTurn: (gameId, data) => {
+        void processAiTurn(gameId, data);
+      },
+    });
     try {
       setTestProvider(() => ({ action: "pass" }));
       const gameId = (await agent.post("/api/games").send({})).body.game.id;

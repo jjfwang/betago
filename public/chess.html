@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>BetaGo</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <title>BetaGo Chess</title>
+    <link rel="stylesheet" href="/chess.css" />
   </head>
   <body>
     <main class="app-shell">
@@ -12,19 +12,14 @@
         <header class="board-header">
           <div>
             <div class="game-nav">
-              <a href="/" class="active">Go</a>
+              <a href="/">Go</a>
               <span>/</span>
-              <a href="/chess">Chess</a>
+              <a href="/chess" class="active">Chess</a>
             </div>
-            <h1>BetaGo</h1>
+            <h1>BetaGo Chess</h1>
             <p id="statusText">Loading game...</p>
           </div>
           <div class="header-actions">
-            <label for="boardSizeSelect" class="level-label">Board</label>
-            <select id="boardSizeSelect" class="level-select">
-              <option value="9" selected>9x9</option>
-              <option value="19">19x19</option>
-            </select>
             <label for="aiLevelSelect" class="level-label">Level</label>
             <select id="aiLevelSelect" class="level-select">
               <option value="entry">Entry</option>
@@ -35,10 +30,11 @@
           </div>
         </header>
 
-        <div id="boardWrap" class="board-wrap"></div>
+        <div class="board-wrap">
+          <div id="boardGrid" class="chess-board" aria-label="Chess board"></div>
+        </div>
 
         <div class="controls">
-          <button id="passBtn" class="btn">Pass</button>
           <button id="resignBtn" class="btn danger">Resign</button>
         </div>
 
@@ -56,18 +52,22 @@
           <dd id="aiStatusText">-</dd>
           <dt>Level</dt>
           <dd id="aiLevelText">-</dd>
-          <dt>Captures</dt>
-          <dd id="captureText">-</dd>
+          <dt>Check</dt>
+          <dd id="checkText">-</dd>
           <dt>Winner</dt>
           <dd id="winnerText">-</dd>
         </dl>
+
+        <section id="aiRationaleSection" class="hidden">
+          <h3>AI Rationale</h3>
+          <p id="aiRationaleText" class="ai-rationale"></p>
+        </section>
 
         <h3>Move History</h3>
         <ol id="moveList" class="move-list"></ol>
       </aside>
     </main>
 
-    <script src="/vendor/wgo.js"></script>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/chess.js"></script>
   </body>
 </html>

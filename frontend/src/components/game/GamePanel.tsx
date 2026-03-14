@@ -202,6 +202,7 @@ function MetaRow({ label, value }: { label: string; value: string }) {
  */
 function MoveRow({ move }: { move: Move }) {
   const playerLabel = move.player === "human" ? "You" : "AI";
+  const showRationale = move.player === "ai" && Boolean(move.rationale);
 
   let actionLabel: string;
   let actionClass: string;
@@ -226,18 +227,25 @@ function MoveRow({ move }: { move: Move }) {
   }
 
   return (
-    <li className="flex gap-1.5 items-baseline">
-      <span className="text-ink-muted w-5 text-right shrink-0">
-        {move.move_index + 1}.
-      </span>
-      <span
-        className={
-          move.player === "human" ? "text-ink-DEFAULT" : "text-ink-muted"
-        }
-      >
-        {playerLabel}
-      </span>
-      <span className={actionClass}>{actionLabel}</span>
+    <li className="py-0.5">
+      <div className="flex gap-1.5 items-baseline">
+        <span className="text-ink-muted w-5 text-right shrink-0">
+          {move.move_index + 1}.
+        </span>
+        <span
+          className={
+            move.player === "human" ? "text-ink-DEFAULT" : "text-ink-muted"
+          }
+        >
+          {playerLabel}
+        </span>
+        <span className={actionClass}>{actionLabel}</span>
+      </div>
+      {showRationale && (
+        <p className="ml-6 mt-0.5 text-[11px] leading-relaxed text-ink-muted">
+          Why: {move.rationale}
+        </p>
+      )}
     </li>
   );
 }

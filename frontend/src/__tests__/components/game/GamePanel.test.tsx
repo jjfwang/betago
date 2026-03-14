@@ -403,6 +403,29 @@ describe("GamePanel", () => {
     );
     expect(screen.getByText("D4")).toBeInTheDocument();
     expect(screen.getByText("E5")).toBeInTheDocument();
+    expect(screen.getByText("Why: Good move")).toBeInTheDocument();
+  });
+
+  it("does not show a why line for human moves", () => {
+    const moves: Move[] = [
+      makeMove({
+        move_index: 0,
+        player: "human",
+        coordinate: "D4",
+        rationale: "Human rationale should not render here",
+      }),
+    ];
+    render(
+      <GamePanel
+        game={makeGame({ moves })}
+        humanMoveEnabled={true}
+        isSubmitting={false}
+        onPass={noop}
+        onResign={noop}
+        onNewGame={noop}
+      />,
+    );
+    expect(screen.queryByText(/why:/i)).not.toBeInTheDocument();
   });
 
   it("renders pass action in move history", () => {
