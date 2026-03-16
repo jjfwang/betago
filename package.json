@@ -11,6 +11,7 @@
     "migrate:status": "knex migrate:status --knexfile knexfile.cjs",
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
     "test": "node --test --test-force-exit",
+    "eval:ai": "node scripts/eval-ai.js",
     "worker": "node src/worker.js"
   },
   "engines": {

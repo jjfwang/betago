@@ -82,6 +82,8 @@ Set OpenAI Responses API credentials:
 export LLM_API_URL="https://api.openai.com/v1/responses"
 export LLM_API_KEY="your-openai-api-key"
 export LLM_MODEL="gpt-4.1-mini"
+# Optional: stronger model just for hard difficulty
+export LLM_MODEL_HARD="gpt-4.1"
 npm run dev
 ```
 
@@ -110,6 +112,11 @@ If the LLM endpoint times out, returns invalid JSON, or proposes an illegal
 move repeatedly, the worker retries the provider response and then applies a
 deterministic local fallback move so the game can continue. Only if both the
 provider and fallback fail does `ai_status` end up as `error`.
+
+The AI layer now also enriches prompts with local tactical analysis:
+- Go: liberties, connection pressure, atari pressure, capture opportunities
+- Chess: material swing, checks, attacked/defended destination squares, centralization
+- Optional per-difficulty model overrides via `LLM_MODEL_ENTRY` and `LLM_MODEL_HARD`
 
 ## AI Runtime Logging
 
@@ -142,4 +149,13 @@ AI_LOG_PROMPT=true
 
 ```bash
 npm test
+npm run eval:ai
+```
+
+The evaluation harness reads `eval/fixtures.json` and prints scored results for
+curated Go and Chess positions. Add `--live` to call the configured model
+instead of the local heuristic recommendation:
+
+```bash
+node scripts/eval-ai.js --live
 ```

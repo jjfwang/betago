@@ -1,0 +1,45 @@
+{
+  "go": [
+    {
+      "id": "go-capture-1",
+      "description": "White should capture the surrounded black stone at the center.",
+      "board_size": 5,
+      "ai_level": "hard",
+      "stones": [
+        { "x": 2, "y": 1, "color": "W" },
+        { "x": 1, "y": 2, "color": "W" },
+        { "x": 3, "y": 2, "color": "W" },
+        { "x": 2, "y": 2, "color": "B" }
+      ],
+      "expected": { "action": "place", "x": 2, "y": 3 }
+    },
+    {
+      "id": "go-connect-1",
+      "description": "White should prefer connecting adjacent groups instead of drifting to the corner.",
+      "board_size": 5,
+      "ai_level": "hard",
+      "stones": [
+        { "x": 1, "y": 2, "color": "W" },
+        { "x": 3, "y": 2, "color": "W" },
+        { "x": 2, "y": 1, "color": "B" }
+      ],
+      "expected": { "action": "place", "x": 2, "y": 2 }
+    }
+  ],
+  "chess": [
+    {
+      "id": "chess-capture-queen-1",
+      "description": "Black should take a hanging white queen with the rook.",
+      "ai_level": "hard",
+      "fen": "4r1k1/8/8/8/8/8/4Q3/6K1 b - - 0 1",
+      "expected": { "action": "move", "move": "e8e2" }
+    },
+    {
+      "id": "chess-center-1",
+      "description": "Black should prefer centralizing a knight in the opening.",
+      "ai_level": "hard",
+      "fen": "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1",
+      "expected": { "action": "move", "move": "b8c6" }
+    }
+  ]
+}
