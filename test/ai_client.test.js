@@ -105,7 +105,7 @@ test("selectAIMove uses OpenAI Responses API payload and parses JSON output", as
     source: "external",
     responseId: "resp_123",
     model: "gpt-4.1-mini",
-    promptVersion: "1.0",
+    promptVersion: "1.1",
     externalError: null,
   });
 });
@@ -119,7 +119,7 @@ test("selectAIMove still supports legacy JSON endpoints", async () => {
     assert.equal(options.headers.Authorization, "Bearer legacy-key");
 
     const payload = JSON.parse(options.body);
-    assert.equal(payload.prompt_version, "1.0");
+    assert.equal(payload.prompt_version, "1.1");
     assert.equal(payload.board_size, 19);
     assert.equal(payload.legal_moves.length, 3);
 
@@ -144,7 +144,7 @@ test("selectAIMove still supports legacy JSON endpoints", async () => {
     source: "external",
     responseId: "legacy-123",
     model: "legacy-model",
-    promptVersion: "1.0",
+    promptVersion: "1.1",
     externalError: null,
   });
 });

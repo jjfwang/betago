@@ -1,9 +1,9 @@
 import { aiLog, aiLogPrompt } from "../ai/logger.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
-const PROMPT_VERSION = "1.0";
+const PROMPT_VERSION = "1.1";
 const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
-const OPENAI_MAX_OUTPUT_TOKENS = 220;
+const OPENAI_MAX_OUTPUT_TOKENS = 240;
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
 
 let testProvider = null;
@@ -61,6 +61,62 @@ function isResponsesEndpoint(url) {
   }
 }
 
+function summarizeChessCandidates(legalMoves) {
+  const centerDistance = (square) => {
+    const file = square.charCodeAt(0) - "a".charCodeAt(0);
+    const rank = Number.parseInt(square[1], 10) - 1;
+    return Math.abs(file - 3.5) + Math.abs(rank - 3.5);
+  };
+
+  return [...legalMoves]
+    .map((move) => ({
+      uci: move.uci,
+      notation: move.notation,
+      from: move.from,
+      to: move.to,
+      captures: Boolean(move.capturedPiece),
+      promotion: move.promotion ?? null,
+      center_distance: centerDistance(move.to),
+    }))
+    .sort((a, b) => {
+      const captureDelta = Number(b.captures) - Number(a.captures);
+      if (captureDelta !== 0) {
+        return captureDelta;
+      }
+      const distanceDelta = a.center_distance - b.center_distance;
+      if (distanceDelta !== 0) {
+        return distanceDelta;
+      }
+      return a.uci.localeCompare(b.uci);
+    })
+    .slice(0, 12);
+}
+
+function buildChessStrategyNotes(aiLevel) {
+  switch (normalizeDifficulty(aiLevel)) {
+    case "entry":
+      return [
+        "Play simple, safe chess.",
+        "Prefer developing pieces, recapturing, and avoiding obvious blunders.",
+        "Choose straightforward legal moves over speculative sacrifices.",
+      ];
+    case "hard":
+      return [
+        "Play strong practical chess.",
+        "Prioritize tactical soundness first: do not hang material, answer threats, and take winning captures when justified.",
+        "Favor moves that improve development, king safety, central control, and piece activity.",
+        "Resign only if the position is clearly lost and there is no reasonable practical chance.",
+      ];
+    case "medium":
+    default:
+      return [
+        "Play solid, sensible chess.",
+        "Prefer legal moves that improve development, central control, king safety, or win material safely.",
+        "Avoid random pawn moves or aimless repetition unless tactically necessary.",
+      ];
+  }
+}
+
 function buildPayload(game, legalMoves) {
   return {
     prompt_version: PROMPT_VERSION,
@@ -76,7 +132,9 @@ function buildPayload(game, legalMoves) {
       from: move.from,
       to: move.to,
       promotion: move.promotion ?? null,
+      captures: Boolean(move.capturedPiece),
     })),
+    candidate_moves: summarizeChessCandidates(legalMoves),
     move_history: game.moves.slice(-24).map((move) => ({
       move_index: move.move_index,
       player: move.player,
@@ -95,10 +153,14 @@ function buildOpenAIRequest(game, payload) {
     model: getConfiguredModel(),
     instructions: [
       "You are the black player in a chess game.",
+      "Think privately and choose the strongest legal move you can from the provided position.",
+      ...buildChessStrategyNotes(game.aiLevel),
+      "Use legal_moves as the source of truth. candidate_moves are only hints.",
       "Return only valid JSON.",
       'Use exactly this shape: {"action":"move|resign","move":"e7e5","rationale":"optional short string"}.',
       'If action is "move", move must exactly match one entry from legal_moves. Use the uci field.',
       'If action is "resign", omit move.',
+      "Keep rationale short and user-facing; do not reveal private reasoning.",
       "Do not include markdown or extra text.",
     ].join("\n"),
     input: `Game state JSON:\n${JSON.stringify(payload)}`,

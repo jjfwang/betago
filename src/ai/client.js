@@ -2,10 +2,10 @@ import { aiLog, aiLogPrompt } from "./logger.js";
 import { validateAIAction } from "./schema.js";
 
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS ?? "8000", 10);
-const PROMPT_VERSION = "1.0";
+const PROMPT_VERSION = "1.1";
 const DIFFICULTIES = new Set(["entry", "medium", "hard"]);
 const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
-const OPENAI_MAX_OUTPUT_TOKENS = 200;
+const OPENAI_MAX_OUTPUT_TOKENS = 220;
 
 let testProvider = null;
 
@@ -82,8 +82,61 @@ function isResponsesEndpoint(url) {
   }
 }
 
+function summarizeGoCandidates(game, legalPlacements) {
+  const center = (game.boardSize - 1) / 2;
+
+  return [...legalPlacements]
+    .map((move) => ({
+      x: move.x,
+      y: move.y,
+      captures: move.captures ?? 0,
+      center_distance: Math.abs(move.x - center) + Math.abs(move.y - center),
+    }))
+    .sort((a, b) => {
+      const captureDelta = b.captures - a.captures;
+      if (captureDelta !== 0) {
+        return captureDelta;
+      }
+      const distanceDelta = a.center_distance - b.center_distance;
+      if (distanceDelta !== 0) {
+        return distanceDelta;
+      }
+      if (a.y !== b.y) {
+        return a.y - b.y;
+      }
+      return a.x - b.x;
+    })
+    .slice(0, 12);
+}
+
+function buildGoStrategyNotes(aiLevel) {
+  switch (normalizeDifficulty(aiLevel)) {
+    case "entry":
+      return [
+        "Play simple, natural moves.",
+        "Prefer safe moves near the center or near existing stones.",
+        "Take obvious captures when available.",
+        "Avoid risky fights unless the gain is clear.",
+      ];
+    case "hard":
+      return [
+        "Play strong, disciplined Go.",
+        "Prioritize tactical correctness first: save stones in atari, capture when profitable, and avoid self-atari.",
+        "Favor moves that improve liberties, connect groups, pressure weak enemy stones, or secure efficient territory.",
+        "Use pass only when the board is effectively settled or there are no worthwhile legal plays.",
+      ];
+    case "medium":
+    default:
+      return [
+        "Play solid, sensible Go.",
+        "Prefer legal moves that capture, connect, defend weak groups, or take useful central influence.",
+        "Avoid empty flashy moves with little tactical value.",
+      ];
+  }
+}
+
 function buildGamePayload(game, legalPlacements) {
-  const legal = legalPlacements.map((move) => ({ x: move.x, y: move.y }));
+  const legal = legalPlacements.map((move) => ({ x: move.x, y: move.y, captures: move.captures ?? 0 }));
 
   return {
     prompt_version: PROMPT_VERSION,
@@ -95,7 +148,9 @@ function buildGamePayload(game, legalPlacements) {
     komi: game.komi,
     turn_version: game.turnVersion,
     board: game.board,
+    captures: game.captures ?? null,
     legal_moves: legal,
+    candidate_moves: summarizeGoCandidates(game, legalPlacements),
     moves: game.moves.slice(-20),
     output_schema: {
       action: "place|pass|resign",
@@ -111,11 +166,15 @@ function buildOpenAIRequest(game, payload) {
     model: getConfiguredModel(),
     instructions: [
       "You are the white player in a game of Go.",
+      "Think privately and choose the strongest legal move you can from the provided position.",
+      ...buildGoStrategyNotes(game.aiLevel),
+      "Use legal_moves as the source of truth. candidate_moves are only hints.",
       "Return only valid JSON.",
       'Use exactly this shape: {"action":"place|pass|resign","x":0,"y":0,"rationale":"optional short string"}.',
       'If action is "place", x and y are required and must match one of the legal_moves entries exactly.',
       'If action is "pass" or "resign", omit x and y.',
       "Coordinates are zero-based.",
+      "Keep rationale short and user-facing; do not reveal private reasoning.",
       "Do not include markdown or extra text.",
     ].join("\n"),
     input: `Game state JSON:\n${JSON.stringify(payload)}`,
